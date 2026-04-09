@@ -28,7 +28,7 @@ def run(state: AppState) -> dict:
     # ------------------------------------------------------------------
     # Step 1: Categorise
     # ------------------------------------------------------------------
-    categorised, llm_succeeded = categorise_transactions(transactions)
+    categorised = categorise_transactions(transactions)
 
     # ------------------------------------------------------------------
     # Step 2: Compute trends
@@ -45,13 +45,12 @@ def run(state: AppState) -> dict:
     # ------------------------------------------------------------------
     trend_lines: list[str] = []
     for t in trends:
-        
+        sign = "+" if t.deviation_pct >= 0 else ""
         if t.deviation_pct is None:
             trend_lines.append(
                 f"  {t.category.value:<15} £{t.current_period_total:>8.2f}"
                 f" No data for prev period ")
         else:
-            sign = "+" if t.deviation_pct >= 0 else "-"
             trend_lines.append(
                 f"  {t.category.value:<15} £{t.current_period_total:>8.2f}"
                 f"  ({sign}{t.deviation_pct:.1f}% vs prev period)"
@@ -65,7 +64,6 @@ def run(state: AppState) -> dict:
             f"{len(trends)} spending categories."
         ),
         "details": trend_lines,
-        "categorisation_confidence": "llm" if llm_succeeded else "fallback_keywords",
         # confirmed is intentionally absent — route_after_agent checks for
         # its absence to decide whether a HITL pause is needed.
     }

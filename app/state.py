@@ -63,7 +63,7 @@ class AlertSeverity(str, Enum):
 class Transaction(BaseModel):
     id: str
     date: datetime
-    amount: float = Field(description="Positive = expense, negative = income") # 统一正数表示支出，负数表示收入
+    amount: float = Field(description="Positive = expense, negative = income")
     description: str
     merchant: str
     category: TransactionCategory = TransactionCategory.OTHER
