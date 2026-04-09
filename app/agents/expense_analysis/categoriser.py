@@ -1,34 +1,21 @@
 """
 Transaction categoriser — uses Claude to classify raw transactions in a single
 batch call, returning the same list with the category field populated.
-
-Retry policy: up to MAX_RETRIES attempts with exponential backoff.
-Degradation:  if all retries fail, falls back to keyword-based rule matching
-              so downstream agents still receive partial categorisation.
 """
 
 from __future__ import annotations
 
-import logging
 import os
-import re
-import time
 
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel
 
 from app.state import Transaction, TransactionCategory
 
-logger = logging.getLogger(__name__)
-
-MAX_RETRIES = 3
-_INITIAL_BACKOFF = 2.0  # seconds; doubles on each subsequent retry
-
 
 # ---------------------------------------------------------------------------
 # Structured-output schema (internal, not exported)
 # ---------------------------------------------------------------------------
-
 
 class _CategoryResult(BaseModel):
     transaction_id: str
@@ -40,93 +27,25 @@ class _CategoryBatch(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Keyword fallback (used when all LLM retries are exhausted)
-# ---------------------------------------------------------------------------
-
-# Each entry: (list of lowercase keywords, category to assign on any match).
-# Rules are evaluated in order; first match wins.
-# Input text is sanitised and matched on word boundaries before comparison —
-# see _keyword_fallback() for details.
-_KEYWORD_RULES: list[tuple[list[str], TransactionCategory]] = [
-    (["salary", "payroll", "wage", "dividend", "employer"], TransactionCategory.INCOME),
-    (["rent", "mortgage", "landlord"], TransactionCategory.HOUSING),
-    (["tesco", "sainsbury", "waitrose", "aldi", "lidl", "grocery",
-      "supermarket", "restaurant", "cafe", "coffee", "nando", "pret",
-      "takeaway", "food"], TransactionCategory.FOOD),
-    (["uber", "lyft", "taxi", "tfl", "train", "bus", "transport",
-      "rail", "tube", "metro"], TransactionCategory.TRANSPORT),
-    (["netflix", "spotify", "cinema", "vue", "odeon", "theatre",
-      "entertainment", "game", "steam"], TransactionCategory.ENTERTAINMENT),
-    (["electric", "electricity", "gas", "water", "internet", "bt",
-      "broadband", "utility", "utilities"], TransactionCategory.UTILITIES),
-    (["gym", "doctor", "gp", "pharmacy", "hospital", "health",
-      "dental", "boots", "prescription"], TransactionCategory.HEALTHCARE),
-    (["course", "udemy", "coursera", "university", "school",
-      "education", "tuition", "textbook"], TransactionCategory.EDUCATION),
-    (["amazon", "nike", "adidas", "h&m", "zara", "clarks",
-      "shop", "store", "mall", "clothing", "clothes"], TransactionCategory.SHOPPING),
-    (["savings", "isa", "investment", "deposit", "pension"], TransactionCategory.SAVINGS),
-]
-
-
-def _sanitise(text: str, max_len: int = 60) -> str:
-    """
-    Normalise text before keyword matching to reduce injection surface.
-    Strips to lowercase alphanumeric + spaces, then truncates.
-    """
-    cleaned = re.sub(r"[^a-z0-9 ]", " ", text.lower())
-    return cleaned[:max_len]
-
-
-def _keyword_fallback(transactions: list[Transaction]) -> list[Transaction]:
-    """
-    Best-effort rule-based categorisation used when the LLM is unavailable.
-
-    Input text is sanitised and matched on word boundaries before comparison.
-    Negative amounts are always treated as income.
-    Falls back to OTHER when no keyword matches.
-    """
-    result: list[Transaction] = []
-    for t in transactions:
-        if t.amount < 0:
-            category = TransactionCategory.INCOME
-        else:
-            text = _sanitise(f"{t.description} {t.merchant}")
-            category = TransactionCategory.OTHER
-            for keywords, cat in _KEYWORD_RULES:
-                if any(re.search(rf"\b{re.escape(kw)}\b", text) for kw in keywords):
-                    category = cat
-                    break
-        result.append(t.model_copy(update={"category": category}))
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-
-def categorise_transactions(
-    transactions: list[Transaction],
-) -> tuple[list[Transaction], bool]:
+def categorise_transactions(transactions: list[Transaction]) -> list[Transaction]:
     """
-    Assign a TransactionCategory to every transaction via a single LLM call.
+    Assign a TransactionCategory to every transaction in one LLM call.
 
-    Retries up to MAX_RETRIES times with exponential backoff on failure.
-    If all attempts fail, degrades gracefully to keyword-based rule matching.
-
-    Returns:
-        (categorised transactions, llm_succeeded)
-        llm_succeeded is False when the fallback path was used, allowing the
-        caller to flag the result as low-confidence.
+    Transactions that the model cannot confidently classify default to OTHER.
+    Returns a new list of Transaction objects with the category field set;
+    the original list is not mutated.
     """
     if not transactions:
-        return [], True
+        return []
 
     model_name = os.getenv("SMARTFIN_MODEL", "claude-sonnet-4-6")
     llm = ChatAnthropic(model=model_name)
     structured_llm = llm.with_structured_output(_CategoryBatch)
 
+    # Build a concise representation for each transaction
     lines = [
         f"id={t.id} | merchant={t.merchant} | description={t.description} | amount={t.amount:.2f}"
         for t in transactions
@@ -144,31 +63,11 @@ def categorise_transactions(
         f"Transactions:\n{transactions_block}"
     )
 
-    last_exc: Exception | None = None
-    
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response: _CategoryBatch = structured_llm.invoke(prompt)
-            category_map = {r.transaction_id: r.category for r in response.results}
-            categorised = [
-                t.model_copy(update={"category": category_map.get(t.id, TransactionCategory.OTHER)})
-                for t in transactions
-            ]
-            return categorised, True
-        except Exception as exc:
-            last_exc = exc
-            if attempt < MAX_RETRIES:
-                wait = _INITIAL_BACKOFF * (2 ** (attempt - 1))
-                logger.warning(
-                    "LLM categorisation failed (attempt %d/%d), retrying in %.0fs: %s",
-                    attempt, MAX_RETRIES, wait, exc,
-                )
-                time.sleep(wait)
-            else:
-                logger.error(
-                    "LLM categorisation failed after %d attempts: %s",
-                    MAX_RETRIES, last_exc,
-                )
+    response: _CategoryBatch = structured_llm.invoke(prompt)
 
-    logger.warning("Falling back to keyword-based categorisation.")
-    return _keyword_fallback(transactions), False
+    category_map = {r.transaction_id: r.category for r in response.results}
+
+    return [
+        t.model_copy(update={"category": category_map.get(t.id, TransactionCategory.OTHER)})
+        for t in transactions
+    ]

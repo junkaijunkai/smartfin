@@ -23,7 +23,6 @@ def compute_spending_trends(transactions: list[Transaction]) -> list[SpendingTre
     Categories with no activity in either period are excluded.
     Results are sorted by current-period spend, descending.
     """
-
     now = datetime.now(tz=timezone.utc)
     current_start = now - timedelta(days=PERIOD_DAYS)
     previous_start = now - timedelta(days=PERIOD_DAYS * 2)
@@ -52,7 +51,7 @@ def compute_spending_trends(transactions: list[Transaction]) -> list[SpendingTre
         current = current_totals.get(category, 0.0)
         previous = previous_totals.get(category, 0.0)
 
-        if previous > 0 and current > 0:
+        if previous > 0:
             deviation_pct = round((current - previous) / previous * 100, 2)
         else:
             deviation_pct = None
