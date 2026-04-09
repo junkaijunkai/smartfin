@@ -19,7 +19,7 @@ from app.state import (
     TransactionCategory,
 )
 from app.agents.expense_analysis.analyser import PERIOD_DAYS, compute_spending_trends
-from app.agents.expense_analysis.categoriser import categorise_transactions
+from app.agents.expense_analysis.categoriser import CHUNK_SIZE, MAX_RETRIES, categorise_transactions
 from app.agents.expense_analysis.agent import run as expense_analysis_run
 
 
@@ -242,6 +242,83 @@ class TestCategoriseTransactions:
 
         assert llm_ok is False
         assert result[0].category == TransactionCategory.INCOME
+
+    def test_large_input_is_split_into_chunks(self):
+        """CHUNK_SIZE + 1 transactions must trigger two separate LLM invoke calls."""
+        txs = [
+            Transaction(id=f"c{i}", date=datetime.now(tz=timezone.utc), amount=10.0,
+                        description="tx", merchant="M")
+            for i in range(CHUNK_SIZE + 1)
+        ]
+        # Return valid results for every id in both calls
+        def make_batch(chunk_txs):
+            return SimpleNamespace(results=[
+                SimpleNamespace(transaction_id=t.id, category=TransactionCategory.OTHER)
+                for t in chunk_txs
+            ])
+
+        chain = MagicMock()
+        chain.invoke.side_effect = [
+            make_batch(txs[:CHUNK_SIZE]),
+            make_batch(txs[CHUNK_SIZE:]),
+        ]
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result, llm_ok = categorise_transactions(txs)
+
+        assert chain.invoke.call_count == 2
+        assert len(result) == CHUNK_SIZE + 1
+        assert llm_ok is True
+
+    def test_chunked_results_preserve_original_order(self):
+        """Output transactions must appear in the same order as the input."""
+        txs = [
+            Transaction(id=f"o{i}", date=datetime.now(tz=timezone.utc), amount=float(i),
+                        description="tx", merchant="M")
+            for i in range(CHUNK_SIZE + 5)
+        ]
+        def make_batch(chunk_txs):
+            return SimpleNamespace(results=[
+                SimpleNamespace(transaction_id=t.id, category=TransactionCategory.OTHER)
+                for t in chunk_txs
+            ])
+
+        chain = MagicMock()
+        chain.invoke.side_effect = [
+            make_batch(txs[:CHUNK_SIZE]),
+            make_batch(txs[CHUNK_SIZE:]),
+        ]
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result, _ = categorise_transactions(txs)
+
+        assert [t.id for t in result] == [t.id for t in txs]
+
+    def test_partial_chunk_failure_sets_llm_ok_false(self):
+        """If one chunk exhausts retries, llm_succeeded is False for the whole batch."""
+        txs = [
+            Transaction(id=f"p{i}", date=datetime.now(tz=timezone.utc), amount=10.0,
+                        description="tx", merchant="M")
+            for i in range(CHUNK_SIZE + 1)
+        ]
+        good_batch = SimpleNamespace(results=[
+            SimpleNamespace(transaction_id=t.id, category=TransactionCategory.OTHER)
+            for t in txs[:CHUNK_SIZE]
+        ])
+
+        chain = MagicMock()
+        # First chunk succeeds; second chunk fails all retries
+        chain.invoke.side_effect = [good_batch] + [RuntimeError("API down")] * MAX_RETRIES
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            with patch("app.agents.expense_analysis.categoriser.time.sleep"):
+                result, llm_ok = categorise_transactions(txs)
+
+        assert llm_ok is False
+        assert len(result) == CHUNK_SIZE + 1  # all transactions still returned
 
 
 # ---------------------------------------------------------------------------

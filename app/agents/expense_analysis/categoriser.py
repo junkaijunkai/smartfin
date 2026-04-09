@@ -1,10 +1,14 @@
 """
-Transaction categoriser — uses Claude to classify raw transactions in a single
-batch call, returning the same list with the category field populated.
+Transaction categoriser — uses Claude to classify raw transactions in chunked
+batch calls, returning the same list with the category field populated.
 
-Retry policy: up to MAX_RETRIES attempts with exponential backoff.
-Degradation:  if all retries fail, falls back to keyword-based rule matching
-              so downstream agents still receive partial categorisation.
+Chunking:     large inputs are split into chunks of CHUNK_SIZE before sending
+              to the LLM, then results are merged back in original order.
+Retry policy: each chunk is retried up to MAX_RETRIES times with exponential
+              backoff before degrading.
+Degradation:  if all retries for a chunk fail, that chunk falls back to
+              keyword-based rule matching so downstream agents still receive
+              partial categorisation.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from app.state import Transaction, TransactionCategory
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+CHUNK_SIZE = 200        # transactions per LLM call
 _INITIAL_BACKOFF = 2.0  # seconds; doubles on each subsequent retry
 
 
@@ -40,7 +45,7 @@ class _CategoryBatch(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Keyword fallback (used when all LLM retries are exhausted)
+# Keyword fallback (used when all LLM retries for a chunk are exhausted)
 # ---------------------------------------------------------------------------
 
 # Each entry: (list of lowercase keywords, category to assign on any match).
@@ -102,57 +107,48 @@ def _keyword_fallback(transactions: list[Transaction]) -> list[Transaction]:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Per-chunk LLM call with retry
 # ---------------------------------------------------------------------------
 
 
-def categorise_transactions(
-    transactions: list[Transaction],
-) -> tuple[list[Transaction], bool]:
-    """
-    Assign a TransactionCategory to every transaction via a single LLM call.
-
-    Retries up to MAX_RETRIES times with exponential backoff on failure.
-    If all attempts fail, degrades gracefully to keyword-based rule matching.
-
-    Returns:
-        (categorised transactions, llm_succeeded)
-        llm_succeeded is False when the fallback path was used, allowing the
-        caller to flag the result as low-confidence.
-    """
-    if not transactions:
-        return [], True
-
-    model_name = os.getenv("SMARTFIN_MODEL", "claude-sonnet-4-6")
-    llm = ChatAnthropic(model=model_name)
-    structured_llm = llm.with_structured_output(_CategoryBatch)
-
+def _build_prompt(chunk: list[Transaction]) -> str:
     lines = [
         f"id={t.id} | merchant={t.merchant} | description={t.description} | amount={t.amount:.2f}"
-        for t in transactions
+        for t in chunk
     ]
     category_values = ", ".join(c.value for c in TransactionCategory)
-    transactions_block = "\n".join(lines)
-
-    prompt = (
+    return (
         f"You are a financial data analyst. Classify each transaction below into "
         f"exactly one of these categories: {category_values}.\n\n"
         "Rules:\n"
         "- Positive amount = expense, negative amount = income → use 'income'.\n"
         "- Use 'other' only when no category fits clearly.\n"
         "- Return a result for EVERY transaction id listed, in any order.\n\n"
-        f"Transactions:\n{transactions_block}"
+        "Transactions:\n" + "\n".join(lines)
     )
 
+
+def _categorise_chunk(
+    chunk: list[Transaction],
+    structured_llm,
+) -> tuple[list[Transaction], bool]:
+    """
+    Classify one chunk of transactions via the LLM with retry + fallback.
+
+    Returns:
+        (categorised transactions, llm_succeeded)
+        llm_succeeded is False when the keyword fallback was used.
+    """
+    prompt = _build_prompt(chunk)
     last_exc: Exception | None = None
-    
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response: _CategoryBatch = structured_llm.invoke(prompt)
             category_map = {r.transaction_id: r.category for r in response.results}
             categorised = [
                 t.model_copy(update={"category": category_map.get(t.id, TransactionCategory.OTHER)})
-                for t in transactions
+                for t in chunk
             ]
             return categorised, True
         except Exception as exc:
@@ -170,5 +166,55 @@ def categorise_transactions(
                     MAX_RETRIES, last_exc,
                 )
 
-    logger.warning("Falling back to keyword-based categorisation.")
-    return _keyword_fallback(transactions), False
+    logger.warning("Falling back to keyword-based categorisation for this chunk.")
+    return _keyword_fallback(chunk), False
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def categorise_transactions(
+    transactions: list[Transaction],
+) -> tuple[list[Transaction], bool]:
+    """
+    Assign a TransactionCategory to every transaction.
+
+    Large inputs are split into chunks of CHUNK_SIZE and processed
+    sequentially. Results are merged back in the original input order.
+
+    Returns:
+        (categorised transactions, llm_succeeded)
+        llm_succeeded is True only when every chunk was classified by the LLM.
+        If any chunk fell back to keyword rules, llm_succeeded is False.
+    """
+    if not transactions:
+        return [], True
+
+    model_name = os.getenv("SMARTFIN_MODEL", "claude-sonnet-4-6")
+    llm = ChatAnthropic(model=model_name)
+    structured_llm = llm.with_structured_output(_CategoryBatch)
+
+    chunks = [
+        transactions[i: i + CHUNK_SIZE]
+        for i in range(0, len(transactions), CHUNK_SIZE)
+    ]
+
+    all_results: list[Transaction] = []
+    chunk_ok_flags: list[bool] = []
+
+    for idx, chunk in enumerate(chunks):
+        logger.debug(
+            "Categorising chunk %d/%d (%d transactions)", idx + 1, len(chunks), len(chunk)
+        )
+        categorised, ok = _categorise_chunk(chunk, structured_llm)
+        all_results.extend(categorised)
+        chunk_ok_flags.append(ok)
+
+    llm_succeeded = all(chunk_ok_flags)
+    if not llm_succeeded:
+        failed = chunk_ok_flags.count(False)
+        logger.warning("%d/%d chunk(s) used keyword fallback.", failed, len(chunks))
+
+    return all_results, llm_succeeded
