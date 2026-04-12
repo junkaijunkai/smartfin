@@ -63,15 +63,15 @@ def supervisor_node(state: AppState) -> dict:
     msg = last_message.lower() 
 
     if "budget" in msg:
-        planned = ["expense_analysis","budget_planning"]
+        planned = ["expense_analysis", "budget_planning"]
     elif "goal" in msg:
-        planned = ["expense_analysis","goal_planning"]
-    elif "suspicious" or "anomal" in msg:
-        planned = ["expense_analysis","anomaly_detection"]
-    elif "health" or "risk" in msg:
-        planned = ["expense_analysis","health_assessment"]
+        planned = ["expense_analysis", "goal_planning"]
+    elif any(kw in msg for kw in ["suspicious", "anomal"]):
+        planned = ["anomaly_detection"]  # standalone; uses categorised_transactions if already in state
+    elif any(kw in msg for kw in ["health", "risk"]):
+        planned = ["expense_analysis", "health_assessment"]
     else:
-        planned = ["expense_analysis"]
+        planned = ["expense_analysis", "anomaly_detection"]  # default: always chain anomaly after expense analysis
 
     active_agent = planned.pop(0)
     return {"active_agent": active_agent, "agents_queue": planned} # 记录状态，交给route_to_agent处理
@@ -79,7 +79,7 @@ def supervisor_node(state: AppState) -> dict:
 
 def expense_analysis_node(state: AppState) -> dict:
     from app.agents.expense_analysis.agent import run
-    return run(state)
+    return run(state) 
 
 
 def budget_planning_node(state: AppState) -> dict:
@@ -95,9 +95,8 @@ def goal_planning_node(state: AppState) -> dict:
 
 
 def anomaly_detection_node(state: AppState) -> dict:
-    """Stub — to be replaced by smartfin.agents.anomaly_detection.agent"""
-    print("[stub] anomaly_detection_node called")
-    return {}
+    from app.agents.anomaly_detection.agent import run
+    return run(state) # anomaly_detection can be called standalone or after expense_analysis
 
 
 def health_assessment_node(state: AppState) -> dict:
