@@ -100,9 +100,8 @@ def anomaly_detection_node(state: AppState) -> dict:
 
 
 def health_assessment_node(state: AppState) -> dict:
-    """Stub — to be replaced by smartfin.agents.health_assessment.agent"""
-    print("[stub] health_assessment_node called")
-    return {}
+    from app.agents.health_assessment.agent import run
+    return run(state)
 
 
 def confirm_node(state: AppState) -> dict:
