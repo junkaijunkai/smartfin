@@ -143,7 +143,7 @@ def _detect_unusual_frequency(transactions: list[Transaction]) -> list[AnomalyFl
 
     return flags
 
-# 调用LLM验证候选异常交易
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
