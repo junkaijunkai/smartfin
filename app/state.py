@@ -63,7 +63,7 @@ class AlertSeverity(str, Enum):
 class Transaction(BaseModel):
     id: str
     date: datetime
-    amount: float = Field(description="Positive = expense, negative = income")
+    amount: float = Field(description="Positive = expense, negative = income") # 统一正数表示支出，负数表示收入
     description: str
     merchant: str
     category: TransactionCategory = TransactionCategory.OTHER
@@ -156,6 +156,7 @@ class AppState(TypedDict):
 
     # --- Transaction Anomaly Detection Agent outputs ---
     anomaly_flags: list[AnomalyFlag]
+    anomaly_explanation: str | None
 
     # --- Financial Health and Risk Assessment Agent outputs ---
     health_summary: HealthSummary | None
