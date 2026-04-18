@@ -15,7 +15,9 @@ Flow overview:
               ┌──────────────┬─────────────┼──────────────┬──────────────┐
               ▼              ▼             ▼              ▼              ▼
        expense_analysis  budget_planning  goal_planning  anomaly_detection  health_assessment
-              │              │             │              │              │
+              │             |             |           │   |
+              ▼             |
+       anomaly_detection    |              |              |              |      │                           │              │
               └──────────────┴─────────────┴──────────────┴──────────────┘
                                            │
                                     back to SUPERVISOR
@@ -49,6 +51,7 @@ def route_to_agent(state: AppState) -> str:
     needed (e.g. by parsing the user's message with an LLM).  This function
     is purely a lookup; keep it free of LLM calls.
     """
+    
     next_agent = state.get("active_agent")
 
     routing_map = {
@@ -74,6 +77,7 @@ def route_after_agent(state: AppState) -> str:
     In cases where the agent set pending_confirmation, we route to the
     HITL confirm node first.
     """
+    
     if state.get("pending_confirmation") and not state["pending_confirmation"].get("confirmed"):
         return NODE_CONFIRM
     return NODE_SUPERVISOR
