@@ -1,12 +1,12 @@
 import pytest
 
-from app.budget_planning_agent import (
+from app.agents.budget_planning.planner import (
     generate_budget_allocations,
     calculate_monthly_spending,
     evaluate_budget_progress,
     generate_budget_warnings,
-    run_budget_planning_agent,
 )
+from app.agents.budget_planning.agent import budget_planning_node
 
 
 def test_generate_budget_allocations_basic():
@@ -77,7 +77,7 @@ def test_generate_budget_allocations_scale_down_when_exceed_income_limit():
     )
 
     total_budget = sum(result.values())
-    assert total_budget <= 2700.0 + 0.1  # 90% of 3000
+    assert total_budget <= 2700.0 + 0.1
 
 
 def test_calculate_monthly_spending_basic():
@@ -99,7 +99,7 @@ def test_calculate_monthly_spending_ignore_invalid_and_non_positive_values():
         {"date": "2026-04-02", "category": "food", "amount": 0},
         {"date": "2026-04-03", "category": "food", "amount": -5},
         {"date": "2026-04-04", "category": "food", "amount": "invalid"},
-        {"date": "2026-04-05", "amount": 10},  # no category
+        {"date": "2026-04-05", "amount": 10},
     ]
 
     result = calculate_monthly_spending(transactions)
@@ -222,8 +222,8 @@ def test_generate_budget_warnings_low_medium_high():
     assert severity_map["entertainment"] == "high"
 
 
-def test_run_budget_planning_agent_end_to_end():
-    input_data = {
+def test_budget_planning_node_end_to_end():
+    state = {
         "monthly_income": 5000,
         "transactions": [
             {"date": "2026-04-01", "category": "food", "amount": 50},
@@ -246,50 +246,67 @@ def test_run_budget_planning_agent_end_to_end():
                 "entertainment": "rising",
             },
         },
-        "existing_budget": {},
         "current_date": "2026-04-16",
     }
 
-    result = run_budget_planning_agent(input_data)
+    new_state = budget_planning_node(state)
 
-    assert "budget_allocations" in result
-    assert "progress" in result
-    assert "warnings" in result
-    assert "summary" in result
+    assert "budget_allocations" in new_state
+    assert "budget_progress" in new_state
+    assert "budget_warnings" in new_state
 
-    assert "food" in result["budget_allocations"]
-    assert "food" in result["progress"]
-    assert isinstance(result["warnings"], list)
-    assert isinstance(result["summary"], str)
+    assert "food" in new_state["budget_allocations"]
+    assert "food" in new_state["budget_progress"]
+    assert isinstance(new_state["budget_warnings"], list)
 
 
-def test_run_budget_planning_agent_invalid_current_date():
-    input_data = {
+def test_budget_planning_node_preserves_existing_state_fields():
+    state = {
         "monthly_income": 5000,
         "transactions": [],
         "expense_analysis": {
             "category_monthly_avg": {"food": 500},
             "category_trends": {"food": "stable"},
         },
-        "existing_budget": {},
-        "current_date": "16-04-2026",  # invalid format
+        "current_date": "2026-04-16",
+        "user_id": "u123",
+        "session_id": "s456",
     }
 
-    with pytest.raises(ValueError):
-        run_budget_planning_agent(input_data)
+    new_state = budget_planning_node(state)
+
+    assert new_state["user_id"] == "u123"
+    assert new_state["session_id"] == "s456"
+    assert "budget_allocations" in new_state
+    assert "budget_progress" in new_state
+    assert "budget_warnings" in new_state
 
 
-def test_run_budget_planning_agent_invalid_expense_analysis_structure():
-    input_data = {
+def test_budget_planning_node_invalid_current_date():
+    state = {
         "monthly_income": 5000,
         "transactions": [],
         "expense_analysis": {
-            "category_monthly_avg": ["food", 500],  # invalid
+            "category_monthly_avg": {"food": 500},
             "category_trends": {"food": "stable"},
         },
-        "existing_budget": {},
+        "current_date": "16-04-2026",
+    }
+
+    with pytest.raises(ValueError):
+        budget_planning_node(state)
+
+
+def test_budget_planning_node_invalid_expense_analysis_structure():
+    state = {
+        "monthly_income": 5000,
+        "transactions": [],
+        "expense_analysis": {
+            "category_monthly_avg": ["food", 500],
+            "category_trends": {"food": "stable"},
+        },
         "current_date": "2026-04-16",
     }
 
     with pytest.raises(ValueError):
-        run_budget_planning_agent(input_data)
+        budget_planning_node(state)
