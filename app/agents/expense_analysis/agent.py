@@ -29,12 +29,16 @@ def run(state: AppState) -> dict:
     # Step 1: Categorise
     # ------------------------------------------------------------------
     categorised, llm_succeeded = categorise_transactions(transactions)
-
+    if not categorised:
+        return {
+            "categorised_transactions": [],
+            "spending_trends": [],
+        }
     # ------------------------------------------------------------------
     # Step 2: Compute trends
     # ------------------------------------------------------------------
     trends = compute_spending_trends(categorised)
-
+    
     # ------------------------------------------------------------------
     # Step 3: Build HITL confirmation payload
     #
