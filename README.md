@@ -170,7 +170,3 @@ Rong Shu · Shi Zihan · Wen Qi · Xie Linhan · Zhang Junkai · Zhang Yuchen
 ## 📄 License
 
 This project is developed for academic purposes.
-
-## 🔔 Declaration
-
-The authors used Claude-Sonnet-4.6 to assist Git version control.
