@@ -7,6 +7,7 @@ from app.agents.budget_planning.planner import (
     generate_budget_warnings,
 )
 from app.agents.budget_planning.agent import budget_planning_node
+from app.state import TransactionCategory
 
 
 def test_generate_budget_allocations_basic():
@@ -255,7 +256,7 @@ def test_budget_planning_node_end_to_end():
     assert "budget_progress" in new_state
     assert "budget_warnings" in new_state
 
-    assert "food" in new_state["budget_allocations"]
+    assert any(a.category == TransactionCategory.FOOD for a in new_state["budget_allocations"])
     assert "food" in new_state["budget_progress"]
     assert isinstance(new_state["budget_warnings"], list)
 

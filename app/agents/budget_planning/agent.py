@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Dict
 
 from app.agents.budget_planning.planner import (
@@ -10,6 +10,7 @@ from app.agents.budget_planning.planner import (
     generate_budget_allocations,
     generate_budget_warnings,
 )
+from app.state import BudgetAllocation, TransactionCategory
 
 
 def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,7 +37,14 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(category_trends, dict):
         raise ValueError("expense_analysis.category_trends must be a dictionary")
 
-    existing_budget = state.get("budget_allocations", {}) or {}
+    # Convert existing list[BudgetAllocation] to dict for planner compatibility
+    raw_existing = state.get("budget_allocations") or []
+    existing_budget = {}
+    if raw_existing:
+        for alloc in raw_existing:
+            if isinstance(alloc, BudgetAllocation):
+                existing_budget[alloc.category.value] = alloc.allocated_amount
+
     current_date_str = state.get("current_date")
 
     # === 2. 处理日期 ===
@@ -71,7 +79,28 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
     warnings = generate_budget_warnings(progress)
 
     # === 4. 写回 state（LangGraph 关键点） ===
-    state["budget_allocations"] = budget_allocations
+    # Convert dict budget_allocations to list[BudgetAllocation] per AppState contract
+    period_start = date(current_date.year, current_date.month, 1)
+    period_end = date(current_date.year, current_date.month, days_in_month)
+
+    allocation_list: list[BudgetAllocation] = []
+    for cat, amount in budget_allocations.items():
+        try:
+            category_enum = TransactionCategory(cat)
+        except ValueError:
+            # Skip categories that don't map to TransactionCategory enum
+            continue
+        allocation_list.append(
+            BudgetAllocation(
+                category=category_enum,
+                allocated_amount=amount,
+                spent_amount=actual_spending.get(cat, 0.0),
+                period_start=period_start,
+                period_end=period_end,
+            )
+        )
+
+    state["budget_allocations"] = allocation_list
     state["budget_progress"] = progress
     state["budget_warnings"] = warnings
 
