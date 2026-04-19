@@ -156,6 +156,7 @@ class AppState(TypedDict):
 
     # --- Transaction Anomaly Detection Agent outputs ---
     anomaly_flags: list[AnomalyFlag]
+    anomaly_explanation: str | None
 
     # --- Financial Health and Risk Assessment Agent outputs ---
     health_summary: HealthSummary | None

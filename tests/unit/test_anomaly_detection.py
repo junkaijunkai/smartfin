@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 from app.agents.anomaly_detection.agent import run
 from app.agents.anomaly_detection.detector import (
@@ -13,7 +14,8 @@ from app.agents.anomaly_detection.detector import (
     _detect_unusual_frequency,
     detect_anomalies,
 )
-from app.state import AnomalyType, Transaction, TransactionCategory
+from app.agents.anomaly_detection.extractor import extract_and_detect
+from app.state import AnomalyFlag, AnomalyType, Transaction, TransactionCategory
 
 
 # ---------------------------------------------------------------------------
@@ -203,38 +205,112 @@ class TestDetectAnomalies:
 
 
 class TestAnomalyDetectionAgentNode:
-    def test_writes_anomaly_flags_to_state(self):
+    @patch("app.agents.anomaly_detection.agent.extract_and_detect")
+    def test_writes_anomaly_flags_to_state(self, mock_extract):
+        """agent.run() returns both anomaly_flags and anomaly_explanation."""
+        mock_extract.return_value = ([], "No anomalous transactions detected.")
         result = run({"transactions": []})
         assert "anomaly_flags" in result
+        assert "anomaly_explanation" in result
         assert isinstance(result["anomaly_flags"], list)
 
-    def test_empty_state_returns_empty_flags(self):
-        assert run({})["anomaly_flags"] == []
+    @patch("app.agents.anomaly_detection.agent.extract_and_detect")
+    def test_empty_state_returns_empty_flags(self, mock_extract):
+        mock_extract.return_value = ([], "No anomalous transactions detected.")
+        result = run({})
+        assert result["anomaly_flags"] == []
 
-    def test_prefers_categorised_transactions(self):
+    @patch("app.agents.anomaly_detection.agent.extract_and_detect")
+    def test_prefers_categorised_transactions(self, mock_extract):
         """When both keys are present, categorised_transactions takes priority."""
         outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
+        flag = AnomalyFlag(transaction_id="outlier", anomaly_type=AnomalyType.UNUSUAL_AMOUNT, explanation="test")
+        mock_extract.return_value = ([flag], "The following transactions may be anomalous:\n1. test")
+
         food_normals = _food_batch([10, 11, 12, 13, 14])
         state = {
             "transactions": [],
             "categorised_transactions": food_normals + [outlier],
         }
         result = run(state)
+
+        # Verify extract_and_detect was called with categorised_transactions
+        called_messages, called_txns = mock_extract.call_args[0]
+        assert len(called_txns) == 6  # 5 normals + 1 outlier
         assert any(f.transaction_id == "outlier" for f in result["anomaly_flags"])
 
-    def test_falls_back_to_raw_transactions(self):
+    @patch("app.agents.anomaly_detection.agent.extract_and_detect")
+    def test_falls_back_to_raw_transactions(self, mock_extract):
         """When categorised_transactions is absent, raw transactions are used."""
         outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
+        flag = AnomalyFlag(transaction_id="outlier", anomaly_type=AnomalyType.UNUSUAL_AMOUNT, explanation="test")
+        mock_extract.return_value = ([flag], "The following transactions may be anomalous:\n1. test")
+
         state = {"transactions": _food_batch([10, 11, 12, 13, 14]) + [outlier]}
         result = run(state)
         assert any(f.transaction_id == "outlier" for f in result["anomaly_flags"])
 
-    def test_falls_back_when_categorised_is_empty_list(self):
+    @patch("app.agents.anomaly_detection.agent.extract_and_detect")
+    def test_falls_back_when_categorised_is_empty_list(self, mock_extract):
         """An empty categorised_transactions triggers fallback to raw transactions."""
         outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
+        flag = AnomalyFlag(transaction_id="outlier", anomaly_type=AnomalyType.UNUSUAL_AMOUNT, explanation="test")
+        mock_extract.return_value = ([flag], "The following transactions may be anomalous:\n1. test")
+
         state = {
             "transactions": _food_batch([10, 11, 12, 13, 14]) + [outlier],
             "categorised_transactions": [],
         }
         result = run(state)
         assert any(f.transaction_id == "outlier" for f in result["anomaly_flags"])
+
+
+# ---------------------------------------------------------------------------
+# TestExtractAndDetect
+# ---------------------------------------------------------------------------
+
+
+class TestExtractAndDetect:
+    def test_no_flags_returns_no_anomaly_message(self):
+        """Empty transactions → empty flags + 'no anomalies' message."""
+        flags, explanation = extract_and_detect([], [])
+        assert flags == []
+        assert "No anomalous" in explanation
+
+    @patch("app.agents.anomaly_detection.extractor.ChatAnthropic")
+    def test_returns_flags_and_formatted_explanation(self, MockLLM):
+        """Flags present → LLM explanations + formatted string."""
+        outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
+        food_normals = _food_batch([10, 11, 12, 13, 14])
+        txns = food_normals + [outlier]
+
+        explanation_batch = MagicMock()
+        explanation_batch.results = [
+            MagicMock(transaction_id="outlier", explanation="LLM generated explanation")
+        ]
+        MockLLM.return_value.with_structured_output.return_value.invoke.return_value = explanation_batch
+
+        flags, explanation = extract_and_detect([], txns)
+
+        assert len(flags) == 1
+        assert flags[0].transaction_id == "outlier"
+        assert "following transactions may be anomalous" in explanation
+        assert "LLM generated explanation" in explanation
+
+    @patch("app.agents.anomaly_detection.extractor.ChatAnthropic")
+    def test_llm_failure_falls_back_to_statistical_explanation(self, MockLLM):
+        """LLM exception → flags kept, statistical explanation used in output."""
+        outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
+        food_normals = _food_batch([10, 11, 12, 13, 14])
+        txns = food_normals + [outlier]
+
+        MockLLM.return_value.with_structured_output.return_value.invoke.side_effect = RuntimeError("API down")
+
+        flags, explanation = extract_and_detect([], txns)
+
+        assert len(flags) == 1
+        assert flags[0].transaction_id == "outlier"
+        # Fallback to statistical explanation
+        assert "following transactions may be anomalous" in explanation
+        assert "exceeds the upper fence" in explanation  # statistical reason
+

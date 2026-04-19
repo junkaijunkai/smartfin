@@ -1,18 +1,23 @@
 """
-Transaction anomaly detector — pure Python, no LLM.
+Transaction anomaly detector — pure statistical detection.
 
-Two detection methods:
-  1. UNUSUAL_AMOUNT  — per-category IQR outlier (requires >= MIN_SAMPLE_SIZE transactions).
-  2. UNUSUAL_FREQUENCY — same merchant appearing > FREQUENCY_THRESHOLD times within
-                         a rolling FREQUENCY_WINDOW_DAYS window.
+Two detection methods (no LLM decision-making):
+  1. UNUSUAL_AMOUNT     — per-category IQR outlier (requires >= MIN_SAMPLE_SIZE transactions).
+  2. UNUSUAL_FREQUENCY  — same merchant appearing > FREQUENCY_THRESHOLD times within
+                          a rolling FREQUENCY_WINDOW_DAYS window.
+
+LLM-based explanation generation is delegated to extractor.py.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import timedelta, timezone
 
 from app.state import AnomalyFlag, AnomalyType, Transaction
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tuning constants
@@ -33,14 +38,14 @@ def _iqr_upper_fence(values: list[float]) -> float:
     """Return the upper Tukey fence: Q3 + IQR_FACTOR * IQR."""
     sorted_vals = sorted(values)
     n = len(sorted_vals)
-    mid = n // 2
     # Use integer indexing — avoids float interpolation for simplicity
     q1 = sorted_vals[n // 4]
     q3 = sorted_vals[(3 * n) // 4]
     iqr = q3 - q1
     return q3 + IQR_FACTOR * iqr
 
-#  根据Upper Tukey Fence检测异常金额
+
+# 异常金额检测：根据Upper Tukey Fence检测
 def _detect_unusual_amounts(transactions: list[Transaction]) -> list[AnomalyFlag]:
     """
     Flag transactions whose amount is an outlier within their category.
@@ -48,6 +53,7 @@ def _detect_unusual_amounts(transactions: list[Transaction]) -> list[AnomalyFlag
     Only expense transactions (amount > 0) are considered.
     Categories with fewer than MIN_SAMPLE_SIZE data points are skipped.
     """
+
     by_category: dict[str, list[Transaction]] = defaultdict(list)
     for t in transactions:
         if t.amount > 0:
@@ -56,9 +62,11 @@ def _detect_unusual_amounts(transactions: list[Transaction]) -> list[AnomalyFlag
     flags: list[AnomalyFlag] = []
     for category, txns in by_category.items():
         if len(txns) < MIN_SAMPLE_SIZE:
+            # 交易样本到达一定量才进行统计分析
             continue
 
         amounts = [t.amount for t in txns]
+        # 计算异常阈值
         fence = _iqr_upper_fence(amounts)
         category_mean = sum(amounts) / len(amounts)
 
@@ -78,7 +86,7 @@ def _detect_unusual_amounts(transactions: list[Transaction]) -> list[AnomalyFlag
 
     return flags
 
-# 
+# 异常频率检测：同一商户在滚动窗口内出现过多
 def _detect_unusual_frequency(transactions: list[Transaction]) -> list[AnomalyFlag]:
     """
     Flag transactions where the same merchant appears more than FREQUENCY_THRESHOLD
@@ -145,12 +153,10 @@ def detect_anomalies(transactions: list[Transaction]) -> list[AnomalyFlag]:
     """
     Run all anomaly detectors against the given transaction list.
 
-    Returns a deduplicated list of AnomalyFlag objects sorted by transaction_id.
-    A transaction can appear in multiple flags if it triggers multiple detectors.
+    Returns a list of AnomalyFlag objects sorted by (transaction_id, anomaly_type).
+    LLM-based explanation is handled by extractor.py.
     """
     flags: list[AnomalyFlag] = []
     flags.extend(_detect_unusual_amounts(transactions))
     flags.extend(_detect_unusual_frequency(transactions))
-
-    # Sort for deterministic ordering
     return sorted(flags, key=lambda f: (f.transaction_id, f.anomaly_type))
