@@ -64,7 +64,9 @@ def supervisor_node(state: AppState) -> dict:
 
     if "budget" in msg:
         planned = ["expense_analysis", "budget_planning"]
-    elif "goal" in msg:
+    #elif "goal" in msg:
+        #planned = ["expense_analysis", "goal_planning"]
+    elif any(kw in msg for kw in ["goal", "save", "saving", "fund", "deposit"]):
         planned = ["expense_analysis", "goal_planning"]
     elif any(kw in msg for kw in ["suspicious", "anomal"]):
         planned = ["anomaly_detection"]  # standalone; uses categorised_transactions if already in state
@@ -88,10 +90,21 @@ def budget_planning_node(state: AppState) -> dict:
     return {}
 
 
+# def goal_planning_node(state: AppState) -> dict:
+#     """Stub — to be replaced by smartfin.agents.goal_planning.agent"""
+#     print("[stub] goal_planning_node called")
+#     return {}
 def goal_planning_node(state: AppState) -> dict:
-    """Stub — to be replaced by smartfin.agents.goal_planning.agent"""
-    print("[stub] goal_planning_node called")
-    return {}
+    """
+    Goal Planning node.
+
+    Calls the real Goal Planning agent, which:
+    - extracts goal information from the user's message
+    - creates/evaluates goals
+    - returns pending_confirmation for HITL
+    """
+    from app.agents.goal_planning.agent import run
+    return run(state)
 
 
 def anomaly_detection_node(state: AppState) -> dict:
