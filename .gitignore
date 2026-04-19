@@ -18,3 +18,8 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# Project documentation
+docs/progress/
+docs/project-proposal.pdf
+CLAUDE.txt
