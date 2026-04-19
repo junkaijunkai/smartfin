@@ -22,3 +22,5 @@ venv/
 # Project documentation
 docs/progress/
 docs/project-proposal.pdf
+AGENT_COMPATIBILITY_REPORT.md
+FIX_SUMMARY.md
