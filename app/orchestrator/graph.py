@@ -153,9 +153,8 @@ def expense_analysis_node(state: AppState) -> dict:
 
 
 def budget_planning_node(state: AppState) -> dict:
-    """Stub — to be replaced by smartfin.agents.budget_planning.agent"""
-    print("[stub] budget_planning_node called")
-    return {}
+    from app.agents.budget_planning.agent import budget_planning_node as run_budget_planning
+    return run_budget_planning(state)
 
 
 # def goal_planning_node(state: AppState) -> dict:
