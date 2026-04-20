@@ -16,6 +16,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.state import AppState
 from app.orchestrator.checkpoints import memory_checkpointer
+from app.orchestrator.intent_classifier import classify_intent
 from app.orchestrator.router import (
     NODE_ANOMALY_DETECTION,
     NODE_BUDGET_PLANNING,
@@ -81,22 +82,13 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
     if state.get("active_agent") not in (None, "end"):
         return {"active_agent": "end", "agents_queue": []}
 
-    # --- Fresh routing: infer worker intent from latest message ---
+    # --- Fresh routing: classify user intent using LLM ---
     messages = state.get("messages", [])
     last_message = messages[-1].content if messages else ""
-    msg = last_message.lower()
 
-    # Determine which worker should be invoked
-    if "budget" in msg:
-        worker_agents = ["budget_planning"]
-    elif any(kw in msg for kw in ["goal", "save", "saving", "fund", "deposit"]):
-        worker_agents = ["goal_planning"]
-    elif any(kw in msg for kw in ["suspicious", "anomal"]):
-        worker_agents = ["anomaly_detection"]
-    elif any(kw in msg for kw in ["health", "risk"]):
-        worker_agents = ["health_assessment"]
-    else:
-        worker_agents = ["anomaly_detection"]
+    # Use LLM to classify intent; falls back to keyword matching on error
+    agent_name = classify_intent(last_message)
+    worker_agents = [agent_name]
 
     # --- Data availability check ---
     has_categorised = bool(state.get("categorised_transactions"))
@@ -114,7 +106,11 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
 
         if disk_cache and has_new_txns:
             # Scenario 3: Cache hit + new transactions → inject cache + incremental analysis
-            planned = ["expense_analysis"] + worker_agents
+            # Avoid double-adding expense_analysis if that's already the intended worker
+            if worker_agents[0] == "expense_analysis":
+                planned = worker_agents
+            else:
+                planned = ["expense_analysis"] + worker_agents
             cache_update = disk_cache
 
         elif disk_cache and not has_new_txns:
@@ -124,7 +120,11 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
 
         elif not disk_cache and has_new_txns:
             # Scenario 5: No cache, new transactions → full analysis needed
-            planned = ["expense_analysis"] + worker_agents
+            # Avoid double-adding expense_analysis if that's already the intended worker
+            if worker_agents[0] == "expense_analysis":
+                planned = worker_agents
+            else:
+                planned = ["expense_analysis"] + worker_agents
             cache_update = {}
 
         else:
