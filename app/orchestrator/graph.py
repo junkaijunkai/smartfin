@@ -12,6 +12,7 @@ Replace the stub functions with real imports as each agent is implemented.
 """
 
 from langgraph.graph import END, StateGraph
+from langchain_core.runnables import RunnableConfig
 
 from app.state import AppState
 from app.orchestrator.checkpoints import memory_checkpointer
@@ -26,57 +27,124 @@ from app.orchestrator.router import (
     route_after_agent,
     route_to_agent,
 )
+from app.tools.transaction_store import load_analysis
 
 
 # ---------------------------------------------------------------------------
 # Node implementations (stubs — replace with real agent imports)
 # ---------------------------------------------------------------------------
 
-def supervisor_node(state: AppState) -> dict:
+
+def _resolve_analysis_cache(state: AppState, config: dict | None) -> dict:
     """
-    Reads the latest user message and decides which specialist agent to invoke.
+    Determine whether cached categorised data is available and inject it into state.
 
-    In the real implementation this will call an LLM with a system prompt
-    that describes each agent's capability, then write the chosen agent name
-    into state["active_agent"].
-
-    Stub behaviour: maintain a list of agents to run. 
-    On each invocation, pop the top agent, and return to supervsior to check the queue state.
-    Return end when the queue is empty.
+    Priority order:
+      1. categorised_transactions already in state → no-op
+      2. Cache file exists on disk → load and return as state update
+      3. Neither → return empty dict
     """
+    if state.get("categorised_transactions"):
+        return {}
 
-    # TODO: replace with LLM-based intent classification
+    thread_id = (config or {}).get("configurable", {}).get("thread_id")
+    if thread_id:
+        result = load_analysis(thread_id)
+        if result:
+            categorised, trends = result
+            return {
+                "categorised_transactions": categorised,
+                "spending_trends": trends,
+            }
+
+    return {}
+
+
+def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> dict:
+    """
+    Routes user requests to appropriate worker agents based on intent and data availability.
+
+    Five routing scenarios:
+      1. state["categorised_transactions"] exists → worker (session cache)
+      2. Disk cache exists + no new transactions → inject cache + worker
+      3. Disk cache exists + new transactions → inject cache + expense_analysis(incremental) + worker
+      4. No data anywhere → prompt user, don't call worker
+      5. New transactions + no cache → expense_analysis(full) + worker
+    """
+    # --- Queue processing: if agents_queue has items, continue consuming ---
     queue = list(state.get("agents_queue", []))
-    
-    # queue里有待跑agent
     if queue:
         active_agent = queue.pop(0)
         return {"active_agent": active_agent, "agents_queue": queue}
-    
-    # queue为空，但active_agent不为空（还是上一个agent）
-    if state.get("active_agent")!=None and state.get("active_agent")!="end":
+
+    # --- Clear active_agent if previous agent finished ---
+    if state.get("active_agent") not in (None, "end"):
         return {"active_agent": "end", "agents_queue": []}
 
-    # queue为空，根据message从头计划agent队列
+    # --- Fresh routing: infer worker intent from latest message ---
     messages = state.get("messages", [])
     last_message = messages[-1].content if messages else ""
-    msg = last_message.lower() 
+    msg = last_message.lower()
 
+    # Determine which worker should be invoked
     if "budget" in msg:
-        planned = ["expense_analysis", "budget_planning"]
-    #elif "goal" in msg:
-        #planned = ["expense_analysis", "goal_planning"]
+        worker_agents = ["budget_planning"]
     elif any(kw in msg for kw in ["goal", "save", "saving", "fund", "deposit"]):
-        planned = ["expense_analysis", "goal_planning"]
+        worker_agents = ["goal_planning"]
     elif any(kw in msg for kw in ["suspicious", "anomal"]):
-        planned = ["anomaly_detection"]  # standalone; uses categorised_transactions if already in state
+        worker_agents = ["anomaly_detection"]
     elif any(kw in msg for kw in ["health", "risk"]):
-        planned = ["expense_analysis", "health_assessment"]
+        worker_agents = ["health_assessment"]
     else:
-        planned = ["expense_analysis", "anomaly_detection"]  # default: always chain anomaly after expense analysis
+        worker_agents = ["anomaly_detection"]
+
+    # --- Data availability check ---
+    has_categorised = bool(state.get("categorised_transactions"))
+    has_new_txns = bool(state.get("transactions"))
+
+    cache_update: dict = {}
+    planned: list = []
+
+    # Scenario 1: Already have categorised in state (multi-call within same session)
+    if has_categorised:
+        planned = worker_agents
+
+    else:
+        disk_cache = _resolve_analysis_cache(state, config)
+
+        if disk_cache and has_new_txns:
+            # Scenario 3: Cache hit + new transactions → inject cache + incremental analysis
+            planned = ["expense_analysis"] + worker_agents
+            cache_update = disk_cache
+
+        elif disk_cache and not has_new_txns:
+            # Scenario 2: Cache hit, no new transactions → use cached data directly
+            planned = worker_agents
+            cache_update = disk_cache
+
+        elif not disk_cache and has_new_txns:
+            # Scenario 5: No cache, new transactions → full analysis needed
+            planned = ["expense_analysis"] + worker_agents
+            cache_update = {}
+
+        else:
+            # Scenario 4: No data anywhere → prompt user to provide transactions
+            from langchain_core.messages import AIMessage
+
+            prompt = (
+                "I need transaction data to help you. "
+                "Please provide your recent transactions so I can get started."
+            )
+            return {
+                "active_agent": "end",
+                "agents_queue": [],
+                "messages": [AIMessage(content=prompt)],
+            }
 
     active_agent = planned.pop(0)
-    return {"active_agent": active_agent, "agents_queue": planned} # 记录状态，交给route_to_agent处理
+    result = {"active_agent": active_agent, "agents_queue": planned}
+    result.update(cache_update)
+    return result
 
 
 def expense_analysis_node(state: AppState) -> dict:

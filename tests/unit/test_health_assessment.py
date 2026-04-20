@@ -534,7 +534,7 @@ class TestGenerateAdvisory:
 
         monkeypatch.setattr("app.agents.health_assessment.assessor.ChatAnthropic", _capture_model)
         _generate_advisory(**self._metrics())
-        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["model"] == "claude-haiku-4-5"
 
     # --- Fallback paths ---
 
