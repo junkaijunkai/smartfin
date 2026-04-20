@@ -280,8 +280,12 @@ class TestExtractAndDetect:
     @patch("app.agents.anomaly_detection.extractor.ChatAnthropic")
     def test_returns_flags_and_formatted_explanation(self, MockLLM):
         """Flags present → LLM explanations + formatted string."""
-        outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
-        food_normals = _food_batch([10, 11, 12, 13, 14])
+        # Use different merchants for normals to avoid triggering frequency detection
+        outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier", merchant="FoodShop")
+        food_normals = [
+            _txn(a, category=TransactionCategory.FOOD, merchant=f"Vendor-{i}", days_ago=i+1)
+            for i, a in enumerate([10, 11, 12, 13, 14])
+        ]
         txns = food_normals + [outlier]
 
         explanation_batch = MagicMock()
@@ -300,8 +304,12 @@ class TestExtractAndDetect:
     @patch("app.agents.anomaly_detection.extractor.ChatAnthropic")
     def test_llm_failure_falls_back_to_statistical_explanation(self, MockLLM):
         """LLM exception → flags kept, statistical explanation used in output."""
-        outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier")
-        food_normals = _food_batch([10, 11, 12, 13, 14])
+        # Use different merchants for normals to avoid triggering frequency detection
+        outlier = _txn(500.0, category=TransactionCategory.FOOD, txn_id="outlier", merchant="FoodShop")
+        food_normals = [
+            _txn(a, category=TransactionCategory.FOOD, merchant=f"Vendor-{i}", days_ago=i+1)
+            for i, a in enumerate([10, 11, 12, 13, 14])
+        ]
         txns = food_normals + [outlier]
 
         MockLLM.return_value.with_structured_output.return_value.invoke.side_effect = RuntimeError("API down")

@@ -192,7 +192,7 @@ def categorise_transactions(
     if not transactions:
         return [], True
 
-    model_name = os.getenv("SMARTFIN_MODEL", "claude-sonnet-4-6")
+    model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
     llm = ChatAnthropic(model=model_name)
     structured_llm = llm.with_structured_output(_CategoryBatch)
 

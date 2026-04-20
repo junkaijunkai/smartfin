@@ -234,7 +234,7 @@ def extract_goal_from_message(user_message: str) -> tuple[GoalExtractionResult, 
         logger.info("SMARTFIN_MOCK_LLM=true, using mock goal extractor.")
         return _mock_extract(user_message), True
 
-    model_name = os.getenv("SMARTFIN_MODEL", "claude-sonnet-4-6")
+    model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
 
     try:
         llm = ChatAnthropic(model=model_name)
