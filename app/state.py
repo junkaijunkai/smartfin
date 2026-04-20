@@ -143,13 +143,19 @@ class AppState(TypedDict):
     # --- Raw input data ---
     transactions: list[Transaction]
     monthly_income: float
+    current_date: str  # YYYY-MM-DD format; defaults to today if not provided
 
     # --- Expense Analysis Agent outputs ---
     categorised_transactions: list[Transaction]
     spending_trends: list[SpendingTrend]
+    expense_analysis: dict  # { "category_monthly_avg": {...}, "category_trends": {...} }
 
     # --- Budget Planning Agent outputs ---
     budget_allocations: list[BudgetAllocation]
+    budget_progress: dict  # category → {"spent", "budget", "remaining", "usage_ratio", "status"}
+    budget_warnings: list  # [{"category", "severity", "message"}, ...]
+    budget_summary: str
+    budget_request: dict  # extracted budget request from user message
 
     # --- Financial Goal Planning Agent outputs ---
     goals: list[FinancialGoal]
@@ -164,5 +170,5 @@ class AppState(TypedDict):
     # --- Orchestrator-managed ---
     alerts: list[Alert]
     pending_confirmation: dict | None  # HITL(Human In The Loop): payload awaiting user confirmation
-    active_agent: str | None    
+    active_agent: str | None
     agents_queue: list[str] # 记录agent执行队列，从顶部移出，从尾部添加，等队列为空时才END

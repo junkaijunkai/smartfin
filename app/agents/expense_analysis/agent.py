@@ -19,6 +19,25 @@ from app.agents.expense_analysis.analyser import compute_spending_trends
 from app.tools.transaction_store import save_analysis
 
 
+def _classify_trend(deviation_pct: float | None) -> str:
+    """
+    Classify spending trend from deviation percentage.
+
+    Used to adjust budget allocation:
+    - "fixed": new category, no historical data → budget = avg_spend × 1.00
+    - "rising": significant increase (≥10%) → budget = avg_spend × 1.10
+    - "volatile": significant decrease (≤-10%) → budget = avg_spend × 0.95
+    - "stable": minor changes (-10% to 10%) → budget = avg_spend × 1.05
+    """
+    if deviation_pct is None:
+        return "fixed"
+    if deviation_pct >= 10:
+        return "rising"
+    if deviation_pct <= -10:
+        return "volatile"
+    return "stable"
+
+
 def _build_result(
     categorised: list,
     trends: list[SpendingTrend],
@@ -50,9 +69,24 @@ def _build_result(
         "categorisation_confidence": "llm" if llm_succeeded else "fallback_keywords",
     }
 
+    # Compute category_monthly_avg and category_trends for budget planning
+    category_monthly_avg = {
+        trend.category.value: trend.current_period_total
+        for trend in trends
+    }
+    category_trends = {
+        trend.category.value: _classify_trend(trend.deviation_pct)
+        for trend in trends
+    }
+    expense_analysis = {
+        "category_monthly_avg": category_monthly_avg,
+        "category_trends": category_trends,
+    }
+
     return {
         "categorised_transactions": categorised,
         "spending_trends": trends,
+        "expense_analysis": expense_analysis,
         "pending_confirmation": pending_confirmation,
     }
 

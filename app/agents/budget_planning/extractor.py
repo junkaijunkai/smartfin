@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from langchain_anthropic import ChatAnthropic
+from app.state import TransactionCategory
 
 
-SUPPORTED_CATEGORIES = ["food", "transport", "housing", "entertainment"]
+# All valid spending categories
+SUPPORTED_CATEGORIES = [cat.value for cat in TransactionCategory if cat.value != "income"]
 
 
 class BudgetRequest(BaseModel):
@@ -33,11 +36,8 @@ def extract_budget_request(state: Dict[str, Any]) -> Dict[str, Any]:
     # fallback income from state
     state_income = state.get("monthly_income")
 
-    llm = ChatAnthropic(
-        model="claude-3-5-sonnet-latest",
-        temperature=0,
-    )
-
+    model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
+    llm = ChatAnthropic(model=model_name, temperature=0)
     structured_llm = llm.with_structured_output(BudgetRequest)
 
     prompt = f"""
@@ -49,7 +49,7 @@ Return:
 - intent: always "budget_planning"
 - user_message: the original user message
 - monthly_income: extract a numeric monthly income only if explicitly stated in the message; otherwise null
-- categories_requested: only choose from {SUPPORTED_CATEGORIES}
+- categories_requested: extract any spending categories the user specifically mentions wanting to plan. Only choose from: {', '.join(SUPPORTED_CATEGORIES)}. Leave empty list if no specific categories are mentioned.
 - needs_clarification: true if the request lacks enough information for budget planning, especially when monthly income is unknown both in the message and external state
 
 User message:

@@ -33,7 +33,13 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         return state
 
     monthly_income = extracted.get("monthly_income")
-    transactions = state.get("transactions", [])
+    categories_requested = extracted.get("categories_requested", [])
+
+    # Use LLM-categorised transactions for consistency with expense_analysis
+    categorised = state.get("categorised_transactions") or []
+    # Fallback to raw transactions if not yet categorised
+    if not categorised:
+        categorised = state.get("transactions", [])
 
     expense_analysis = state.get("expense_analysis", {}) or {}
     if not isinstance(expense_analysis, dict):
@@ -46,6 +52,17 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("expense_analysis.category_monthly_avg must be a dictionary")
     if not isinstance(category_trends, dict):
         raise ValueError("expense_analysis.category_trends must be a dictionary")
+
+    # If user requested specific categories, filter to only those
+    if categories_requested:
+        category_monthly_avg = {
+            cat: amt for cat, amt in category_monthly_avg.items()
+            if cat in categories_requested
+        }
+        category_trends = {
+            cat: trend for cat, trend in category_trends.items()
+            if cat in categories_requested
+        }
 
     raw_existing = state.get("budget_allocations") or []
     existing_budget: Dict[str, float] = {}
@@ -72,7 +89,8 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         existing_budget=existing_budget,
     )
 
-    actual_spending = calculate_monthly_spending(transactions)
+    # Calculate actual spending from LLM-categorised transactions for consistency
+    actual_spending = calculate_monthly_spending(categorised)
 
     progress = evaluate_budget_progress(
         budget_allocations=budget_allocations,

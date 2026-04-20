@@ -52,20 +52,32 @@ def generate_budget_allocations(
 
 
 def calculate_monthly_spending(
-    transactions: List[Dict[str, Any]]
+    transactions: List[Dict[str, Any]] | List[Any]
 ) -> Dict[str, float]:
+    """
+    Calculate monthly spending by category from transaction list.
+
+    Accepts both dict-based and object-based transactions.
+    Only processes expenses (amount > 0); income entries are ignored.
+    """
     spending: Dict[str, float] = defaultdict(float)
 
     for tx in transactions:
         try:
-            amount = float(tx.get("amount", 0.0))
-        except (TypeError, ValueError):
+            # Handle both dict and object (Pydantic model) forms
+            if isinstance(tx, dict):
+                amount = float(tx.get("amount", 0.0))
+                category = str(tx.get("category", "uncategorized")).strip().lower()
+            else:
+                # Pydantic Transaction object
+                amount = float(tx.amount)
+                category = str(tx.category.value).strip().lower() if hasattr(tx.category, 'value') else str(tx.category).strip().lower()
+        except (TypeError, ValueError, AttributeError):
             continue
 
         if amount <= 0:
             continue
 
-        category = str(tx.get("category", "uncategorized")).strip().lower()
         if not category:
             category = "uncategorized"
 
