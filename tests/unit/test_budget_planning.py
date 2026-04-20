@@ -1,5 +1,7 @@
 import pytest
-
+from unittest.mock import MagicMock, patch
+from datetime import date
+from app.agents.budget_planning.extractor import extract_budget_request
 from app.agents.budget_planning.planner import (
     generate_budget_allocations,
     calculate_monthly_spending,
@@ -7,8 +9,104 @@ from app.agents.budget_planning.planner import (
     generate_budget_warnings,
 )
 from app.agents.budget_planning.agent import budget_planning_node
-from app.state import TransactionCategory
+from app.state import BudgetAllocation, TransactionCategory
 
+
+class DummyMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+# ---------------------------------------------------------------------------
+# extractor.py tests
+# ---------------------------------------------------------------------------
+
+@patch("app.agents.budget_planning.extractor.ChatAnthropic")
+def test_extract_budget_request_basic(mock_chat_anthropic):
+    mock_llm = MagicMock()
+    mock_structured = MagicMock()
+
+    mock_result = MagicMock()
+    mock_result.user_message = "Help me plan my food and transport budget"
+    mock_result.monthly_income = None
+    mock_result.categories_requested = ["food", "transport"]
+    mock_result.needs_clarification = False
+
+    mock_structured.invoke.return_value = mock_result
+    mock_llm.with_structured_output.return_value = mock_structured
+    mock_chat_anthropic.return_value = mock_llm
+
+    state = {
+        "messages": [DummyMessage("Help me plan my food and transport budget")],
+        "monthly_income": 5000,
+    }
+
+    result = extract_budget_request(state)
+
+    assert result["intent"] == "budget_planning"
+    assert result["monthly_income"] == 5000
+    assert "food" in result["categories_requested"]
+    assert "transport" in result["categories_requested"]
+    assert result["needs_clarification"] is False
+
+
+@patch("app.agents.budget_planning.extractor.ChatAnthropic")
+def test_extract_budget_request_needs_clarification_when_income_missing(mock_chat_anthropic):
+    mock_llm = MagicMock()
+    mock_structured = MagicMock()
+
+    mock_result = MagicMock()
+    mock_result.user_message = "Please help me plan my monthly budget"
+    mock_result.monthly_income = None
+    mock_result.categories_requested = []
+    mock_result.needs_clarification = True
+
+    mock_structured.invoke.return_value = mock_result
+    mock_llm.with_structured_output.return_value = mock_structured
+    mock_chat_anthropic.return_value = mock_llm
+
+    state = {
+        "messages": [DummyMessage("Please help me plan my monthly budget")],
+    }
+
+    result = extract_budget_request(state)
+
+    assert result["intent"] == "budget_planning"
+    assert result["monthly_income"] is None
+    assert result["needs_clarification"] is True
+
+
+@patch("app.agents.budget_planning.extractor.ChatAnthropic")
+def test_extract_budget_request_empty_messages(mock_chat_anthropic):
+    mock_llm = MagicMock()
+    mock_structured = MagicMock()
+
+    mock_result = MagicMock()
+    mock_result.user_message = ""
+    mock_result.monthly_income = None
+    mock_result.categories_requested = []
+    mock_result.needs_clarification = False
+
+    mock_structured.invoke.return_value = mock_result
+    mock_llm.with_structured_output.return_value = mock_structured
+    mock_chat_anthropic.return_value = mock_llm
+
+    state = {
+        "messages": [],
+        "monthly_income": 4000,
+    }
+
+    result = extract_budget_request(state)
+
+    assert result["intent"] == "budget_planning"
+    assert result["user_message"] == ""
+    assert result["monthly_income"] == 4000
+    assert result["categories_requested"] == []
+    assert result["needs_clarification"] is False
+
+# ---------------------------------------------------------------------------
+# planner.py tests
+# ---------------------------------------------------------------------------
 
 def test_generate_budget_allocations_basic():
     category_monthly_avg = {
@@ -223,8 +321,22 @@ def test_generate_budget_warnings_low_medium_high():
     assert severity_map["entertainment"] == "high"
 
 
-def test_budget_planning_node_end_to_end():
+# ---------------------------------------------------------------------------
+# agent.py tests
+# ---------------------------------------------------------------------------
+
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_end_to_end(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Help me plan my monthly budget for food and transport",
+        "monthly_income": 5000,
+        "categories_requested": ["food", "transport"],
+        "needs_clarification": False,
+    }
+
     state = {
+        "messages": [DummyMessage("Help me plan my monthly budget for food and transport")],
         "monthly_income": 5000,
         "transactions": [
             {"date": "2026-04-01", "category": "food", "amount": 50},
@@ -255,14 +367,31 @@ def test_budget_planning_node_end_to_end():
     assert "budget_allocations" in new_state
     assert "budget_progress" in new_state
     assert "budget_warnings" in new_state
+    assert "budget_summary" in new_state
+    assert "budget_request" in new_state
 
+    assert isinstance(new_state["budget_allocations"], list)
+    assert all(isinstance(a, BudgetAllocation) for a in new_state["budget_allocations"])
     assert any(a.category == TransactionCategory.FOOD for a in new_state["budget_allocations"])
+
     assert "food" in new_state["budget_progress"]
     assert isinstance(new_state["budget_warnings"], list)
+    assert isinstance(new_state["budget_summary"], str)
+    assert new_state["budget_request"]["intent"] == "budget_planning"
 
 
-def test_budget_planning_node_preserves_existing_state_fields():
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_preserves_existing_state_fields(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Plan my monthly budget",
+        "monthly_income": 5000,
+        "categories_requested": [],
+        "needs_clarification": False,
+    }
+
     state = {
+        "messages": [DummyMessage("Plan my monthly budget")],
         "monthly_income": 5000,
         "transactions": [],
         "expense_analysis": {
@@ -281,10 +410,64 @@ def test_budget_planning_node_preserves_existing_state_fields():
     assert "budget_allocations" in new_state
     assert "budget_progress" in new_state
     assert "budget_warnings" in new_state
+    assert "budget_summary" in new_state
+    assert "budget_request" in new_state
 
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_reuses_existing_budget_allocations(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Plan my food budget",
+        "monthly_income": 5000,
+        "categories_requested": ["food"],
+        "needs_clarification": False,
+    }
 
-def test_budget_planning_node_invalid_current_date():
+    existing_allocations = [
+        BudgetAllocation(
+            category=TransactionCategory.FOOD,
+            allocated_amount=600.0,
+            spent_amount=100.0,
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+        )
+    ]
+
     state = {
+        "messages": [DummyMessage("Plan my food budget")],
+        "monthly_income": 5000,
+        "transactions": [],
+        "expense_analysis": {
+            "category_monthly_avg": {"food": 500},
+            "category_trends": {"food": "stable"},
+        },
+        "budget_allocations": existing_allocations,
+        "current_date": "2026-04-16",
+    }
+
+    new_state = budget_planning_node(state)
+
+    food_allocations = [
+        a for a in new_state["budget_allocations"]
+        if a.category == TransactionCategory.FOOD
+    ]
+
+    assert len(food_allocations) == 1
+    assert food_allocations[0].allocated_amount == 600.0
+
+
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_invalid_current_date(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Plan my budget",
+        "monthly_income": 5000,
+        "categories_requested": [],
+        "needs_clarification": False,
+    }
+
+    state = {
+        "messages": [DummyMessage("Plan my budget")],
         "monthly_income": 5000,
         "transactions": [],
         "expense_analysis": {
@@ -297,15 +480,46 @@ def test_budget_planning_node_invalid_current_date():
     with pytest.raises(ValueError):
         budget_planning_node(state)
 
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_invalid_expense_analysis_structure(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Plan my budget",
+        "monthly_income": 5000,
+        "categories_requested": [],
+        "needs_clarification": False,
+    }
 
-def test_budget_planning_node_invalid_expense_analysis_structure():
     state = {
+        "messages": [DummyMessage("Plan my budget")],
         "monthly_income": 5000,
         "transactions": [],
         "expense_analysis": {
             "category_monthly_avg": ["food", 500],
             "category_trends": {"food": "stable"},
         },
+        "current_date": "2026-04-16",
+    }
+
+    with pytest.raises(ValueError):
+        budget_planning_node(state)
+
+
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_invalid_expense_analysis_type(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Plan my budget",
+        "monthly_income": 5000,
+        "categories_requested": [],
+        "needs_clarification": False,
+    }
+
+    state = {
+        "messages": [DummyMessage("Plan my budget")],
+        "monthly_income": 5000,
+        "transactions": [],
+        "expense_analysis": ["not", "a", "dict"],
         "current_date": "2026-04-16",
     }
 

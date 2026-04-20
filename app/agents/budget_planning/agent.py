@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Any, Dict
 
+from app.agents.budget_planning.extractor import extract_budget_request
 from app.agents.budget_planning.planner import (
     calculate_monthly_spending,
     evaluate_budget_progress,
@@ -15,13 +16,23 @@ from app.state import BudgetAllocation, TransactionCategory
 
 def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    LangGraph node for Budget Planning Agent.
-    Reads input from shared state, performs budget planning,
-    and writes results back into state.
-    """
+    LangGraph node entry point for Budget Planning Agent.
 
-    # === 1. 读取输入 ===
-    monthly_income = state.get("monthly_income")
+    Responsibilities:
+    1. Read input from shared state
+    2. Use extractor to parse/normalize the user's request
+    3. Call planner functions for local computation
+    4. Write structured outputs back into state
+    """
+    extracted = extract_budget_request(state)
+    if extracted.get("needs_clarification"):
+        state["budget_request"] = extracted
+        state["budget_summary"] = "More information is needed before generating a budget plan."
+        state["budget_warnings"] = []
+        state["budget_progress"] = {}
+        return state
+
+    monthly_income = extracted.get("monthly_income")
     transactions = state.get("transactions", [])
 
     expense_analysis = state.get("expense_analysis", {}) or {}
@@ -33,21 +44,16 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if not isinstance(category_monthly_avg, dict):
         raise ValueError("expense_analysis.category_monthly_avg must be a dictionary")
-
     if not isinstance(category_trends, dict):
         raise ValueError("expense_analysis.category_trends must be a dictionary")
 
-    # Convert existing list[BudgetAllocation] to dict for planner compatibility
     raw_existing = state.get("budget_allocations") or []
-    existing_budget = {}
-    if raw_existing:
-        for alloc in raw_existing:
-            if isinstance(alloc, BudgetAllocation):
-                existing_budget[alloc.category.value] = alloc.allocated_amount
+    existing_budget: Dict[str, float] = {}
+    for alloc in raw_existing:
+        if isinstance(alloc, BudgetAllocation):
+            existing_budget[alloc.category.value] = alloc.allocated_amount
 
     current_date_str = state.get("current_date")
-
-    # === 2. 处理日期 ===
     if current_date_str:
         try:
             current_date = datetime.strptime(current_date_str, "%Y-%m-%d")
@@ -59,7 +65,6 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
     current_day = current_date.day
     days_in_month = calendar.monthrange(current_date.year, current_date.month)[1]
 
-    # === 3. 调用 planner 层 ===
     budget_allocations = generate_budget_allocations(
         monthly_income=monthly_income,
         category_monthly_avg=category_monthly_avg,
@@ -78,8 +83,6 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     warnings = generate_budget_warnings(progress)
 
-    # === 4. 写回 state（LangGraph 关键点） ===
-    # Convert dict budget_allocations to list[BudgetAllocation] per AppState contract
     period_start = date(current_date.year, current_date.month, 1)
     period_end = date(current_date.year, current_date.month, days_in_month)
 
@@ -88,7 +91,6 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         try:
             category_enum = TransactionCategory(cat)
         except ValueError:
-            # Skip categories that don't map to TransactionCategory enum
             continue
         allocation_list.append(
             BudgetAllocation(
@@ -100,8 +102,16 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
         )
 
+    warning_count = len(warnings)
+    summary = (
+        f"Budget planning completed for {len(budget_allocations)} categories. "
+        f"{warning_count} warning(s) generated."
+    )
+
     state["budget_allocations"] = allocation_list
     state["budget_progress"] = progress
     state["budget_warnings"] = warnings
+    state["budget_summary"] = summary
+    state["budget_request"] = extracted
 
     return state
