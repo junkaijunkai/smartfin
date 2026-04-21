@@ -15,6 +15,9 @@ htmlcov/
 .venv/
 venv/
 
+# Runtime data (chatbot SQLite store, transaction cache, etc.)
+.smartfin/
+
 # IDE
 .vscode/
 .idea/

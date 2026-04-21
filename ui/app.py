@@ -1,10 +1,18 @@
 """
-SmartFin minimalist chat UI.
+SmartFin chat UI with persistent sessions and edit-and-resend.
 
-Streams each LangGraph node update to its own chat bubble. When an agent sets
-pending_confirmation, the graph pauses before the confirm node and the UI
-renders an Approve/Reject card. Free-text while paused is treated as a
-clarification message and resumes the graph with the new context.
+Session management:
+  - Sessions live in .smartfin/chat_ui.db (see ui/sessions.py).
+  - Graph checkpoints live in .smartfin/chatbot.db (SqliteSaver).
+  - Both survive server restarts; the sidebar lists every prior chat.
+
+Edit and resend:
+  - Each user bubble has an ✏️ button.
+  - Clicking it turns the bubble into a text area with Save / Cancel.
+  - On save, the graph rewinds to the checkpoint captured just before
+    that message was sent, invokes with the edited text, and re-streams
+    the agent bubbles that follow. The trace in SQLite is truncated and
+    rewritten.
 
 Run with:  streamlit run ui/app.py
 """
@@ -13,16 +21,14 @@ from __future__ import annotations
 
 import json
 import sys
-import uuid
-from datetime import date
+import time
+from datetime import date, datetime
 from pathlib import Path
 
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Streamlit launches this file as __main__, so the package root isn't
-# implicitly on sys.path — add it before importing app.*
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -30,11 +36,9 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
 
-from app.orchestrator import (  # noqa: E402
-    app_graph,
-    get_pending_interrupt,
-)
+from app.orchestrator import app_graph, get_pending_interrupt  # noqa: E402
 from app.state import Transaction, TransactionCategory  # noqa: E402
+from ui import sessions as sess  # noqa: E402
 
 SAMPLE_TXNS_PATH = REPO_ROOT / "tests" / "fixtures" / "sample_transactions.json"
 
@@ -55,16 +59,42 @@ AGENT_META: dict[str, tuple[str, str]] = {
 
 st.set_page_config(page_title="SmartFin Chat", page_icon="💬", layout="wide")
 
-st.session_state.setdefault("thread_id", f"ui-{uuid.uuid4().hex[:8]}")
-st.session_state.setdefault("trace", [])
 st.session_state.setdefault("monthly_income", 3200.0)
 st.session_state.setdefault("use_sample", True)
 st.session_state.setdefault("pending_prompt", None)
-st.session_state.setdefault("transactions_sent", False)
+st.session_state.setdefault("editing_index", None)
 
 
-def graph_config() -> dict:
-    return {"configurable": {"thread_id": st.session_state.thread_id}}
+def ensure_current_session() -> str:
+    """Return a valid current thread_id, creating/picking one if needed."""
+    tid = st.session_state.get("thread_id")
+    if tid and sess.get_session(tid):
+        return tid
+
+    existing = sess.list_sessions()
+    if existing:
+        tid = existing[0]["thread_id"]
+    else:
+        tid = sess.create_session("New chat")
+
+    st.session_state.thread_id = tid
+    st.session_state.editing_index = None
+    return tid
+
+
+def graph_config(thread_id: str | None = None, checkpoint_id: str | None = None) -> dict:
+    cfg: dict = {"configurable": {"thread_id": thread_id or st.session_state.thread_id}}
+    if checkpoint_id:
+        cfg["configurable"]["checkpoint_id"] = checkpoint_id
+    return cfg
+
+
+def current_checkpoint_id() -> str | None:
+    """Checkpoint id at the tip of the current thread (None if empty)."""
+    snap = app_graph.get_state(graph_config())
+    if not snap or not snap.config:
+        return None
+    return snap.config.get("configurable", {}).get("checkpoint_id")
 
 
 def load_sample_transactions() -> list[Transaction]:
@@ -83,6 +113,36 @@ def load_sample_transactions() -> list[Transaction]:
     ]
 
 
+def relative_time(ts: float) -> str:
+    delta = time.time() - ts
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return datetime.fromtimestamp(ts).strftime("%d %b")
+
+
+# ---------------------------------------------------------------------------
+# Trace helpers (SQLite is the source of truth)
+# ---------------------------------------------------------------------------
+
+def get_trace() -> list[dict]:
+    return sess.load_trace(st.session_state.thread_id)
+
+
+def persist_trace(trace: list[dict]) -> None:
+    sess.save_trace(st.session_state.thread_id, trace)
+    sess.touch_session(st.session_state.thread_id)
+
+
+def append_trace(entry: dict) -> None:
+    trace = get_trace()
+    trace.append(entry)
+    persist_trace(trace)
+
+
 # ---------------------------------------------------------------------------
 # Per-node update summaries
 # ---------------------------------------------------------------------------
@@ -97,14 +157,12 @@ def _latest_ai_text(update: dict) -> str | None:
 
 def summarise_update(node: str, update: dict) -> str:
     if node == "supervisor":
-        # Supervisor may surface a prompt (unknown intent / no data)
         ai = _latest_ai_text(update)
         if ai:
             return ai
-
         active = update.get("active_agent")
         queue = update.get("agents_queue") or []
-        if active == "end" or active is None:
+        if active in ("end", None):
             return "All planned work complete — ending graph."
         parts = [f"Dispatching → `{active}`"]
         if queue:
@@ -124,7 +182,6 @@ def summarise_update(node: str, update: dict) -> str:
         pending = update.get("pending_confirmation")
         if pending and pending.get("action", "").startswith("clarify"):
             return f"⏸ Needs clarification — _{pending.get('summary', '')}_"
-
         allocs = update.get("budget_allocations") or []
         warnings = update.get("budget_warnings") or []
         summary = update.get("budget_summary") or ""
@@ -188,115 +245,187 @@ def summarise_update(node: str, update: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Trace rendering
-# ---------------------------------------------------------------------------
-
-def render_entry(entry: dict) -> None:
-    role = entry["role"]
-    if role == "agent":
-        emoji, name = AGENT_META.get(entry["agent"], ("🤖", entry["agent"]))
-        with st.chat_message("assistant", avatar=emoji):
-            st.markdown(f"**{name}**  \n`{entry['agent']}`")
-            st.markdown(entry["content"])
-    else:
-        with st.chat_message(role):
-            st.markdown(entry["content"])
-
-
-def record_and_render(entry: dict) -> None:
-    st.session_state.trace.append(entry)
-    render_entry(entry)
-
-
-# ---------------------------------------------------------------------------
 # Graph invocation
 # ---------------------------------------------------------------------------
 
-def stream_graph(inputs: dict | None) -> None:
-    try:
-        for chunk in app_graph.stream(inputs, graph_config(), stream_mode="updates"):
-            for node, update in chunk.items():
-                if update is None or node.startswith("__"):
-                    continue
-                record_and_render({
-                    "role": "agent",
-                    "agent": node,
-                    "content": summarise_update(node, update),
-                })
-    except Exception as exc:
-        record_and_render({
-            "role": "agent",
-            "agent": "supervisor",
-            "content": f"❌ **Error during graph execution:** `{type(exc).__name__}: {exc}`",
-        })
-
-
-def run_turn(user_msg: str) -> None:
-    """Fresh turn — user typed a message with no pending HITL."""
-    record_and_render({"role": "user", "content": user_msg})
-
+def _turn_inputs(user_msg: str) -> dict:
     inputs: dict = {
         "messages": [HumanMessage(content=user_msg)],
         "monthly_income": st.session_state.monthly_income,
         "current_date": date.today().isoformat(),
     }
-    # Transactions are persisted by the backend checkpointer + disk cache,
-    # so we only send them on the first turn of a session.
-    if not st.session_state.transactions_sent and st.session_state.use_sample:
+    if st.session_state.use_sample:
+        # Backend dedupes by transaction id, so re-sending is cheap and keeps
+        # forked/rewound threads correct without us tracking send state.
         inputs["transactions"] = load_sample_transactions()
         inputs["goals"] = []
-        st.session_state.transactions_sent = True
+    return inputs
 
-    stream_graph(inputs)
+
+def stream_into_trace(
+    inputs: dict | None,
+    config: dict | None = None,
+    trace: list[dict] | None = None,
+) -> list[dict]:
+    """Stream graph updates, appending each node's summary to `trace`.
+
+    Persists after each chunk so reloads show partial progress.
+    """
+    cfg = config or graph_config()
+    if trace is None:
+        trace = get_trace()
+
+    try:
+        for chunk in app_graph.stream(inputs, cfg, stream_mode="updates"):
+            for node, update in chunk.items():
+                if update is None or node.startswith("__"):
+                    continue
+                trace.append({
+                    "role": "agent",
+                    "agent": node,
+                    "content": summarise_update(node, update),
+                })
+                persist_trace(trace)
+    except Exception as exc:
+        trace.append({
+            "role": "agent",
+            "agent": "supervisor",
+            "content": f"❌ **Error during graph execution:** `{type(exc).__name__}: {exc}`",
+        })
+        persist_trace(trace)
+    return trace
+
+
+def run_turn(user_msg: str) -> None:
+    """Fresh turn — user typed a message with no pending HITL."""
+    cp_before = current_checkpoint_id()
+    trace = get_trace()
+    trace.append({"role": "user", "content": user_msg, "checkpoint_id": cp_before})
+
+    # Auto-title from the first user message if the session is still named "New chat"
+    info = sess.get_session(st.session_state.thread_id)
+    if info and info["title"] == "New chat":
+        sess.rename_session(st.session_state.thread_id, sess.auto_title(user_msg))
+
+    persist_trace(trace)
+    stream_into_trace(_turn_inputs(user_msg), trace=trace)
 
 
 def run_clarification(user_msg: str) -> None:
-    """User typed free-text while HITL-paused — treat as clarification.
-
-    Equivalent to resume_with_confirmation(confirmed=True, user_message=...)
-    but streams per-node updates so the UI shows progress.
-    """
-    record_and_render({"role": "user", "content": user_msg})
+    """User typed free-text while HITL-paused — clarification resume."""
+    trace = get_trace()
+    trace.append({"role": "user", "content": user_msg})
+    persist_trace(trace)
     update = {
         "pending_confirmation": {"confirmed": True},
         "messages": [HumanMessage(content=user_msg)],
-        "active_agent": None,  # force supervisor to re-classify with new message
+        "active_agent": None,
     }
-    stream_graph(update)
+    stream_into_trace(update, trace=trace)
 
 
 def run_resume(confirmed: bool) -> None:
     """User clicked Approve or Reject on the HITL card."""
-    record_and_render({
+    trace = get_trace()
+    trace.append({
         "role": "user",
         "content": "✅ Approved — continuing." if confirmed else "❌ Rejected — continuing.",
     })
-    update = {"pending_confirmation": {"confirmed": confirmed}}
-    for chunk in app_graph.stream(update, graph_config(), stream_mode="updates"):
-        for node, delta in chunk.items():
-            if delta is None or node.startswith("__"):
-                continue
-            record_and_render({
-                "role": "agent",
-                "agent": node,
-                "content": summarise_update(node, delta),
-            })
+    persist_trace(trace)
+    stream_into_trace({"pending_confirmation": {"confirmed": confirmed}}, trace=trace)
+
+
+def run_edit_resend(index: int, new_text: str) -> None:
+    """Rewind to the checkpoint before trace[index] and resend the edited text."""
+    trace = get_trace()
+    if index < 0 or index >= len(trace):
+        return
+    entry = trace[index]
+    if entry.get("role") != "user":
+        return
+
+    checkpoint_id = entry.get("checkpoint_id")
+    tid = st.session_state.thread_id
+
+    # Truncate trace to exclude the edited message and everything after.
+    trimmed = trace[:index]
+
+    if checkpoint_id is None:
+        # First message in the thread — no prior checkpoint. Wipe graph state
+        # for this thread_id so the invoke below starts from a clean slate.
+        try:
+            app_graph.checkpointer.delete_thread(tid)
+        except Exception:
+            pass
+        cfg = graph_config()
+    else:
+        cfg = graph_config(checkpoint_id=checkpoint_id)
+
+    # Re-record the (edited) user entry with the same parent checkpoint_id
+    trimmed.append({"role": "user", "content": new_text, "checkpoint_id": checkpoint_id})
+    persist_trace(trimmed)
+
+    # If the user edited the very first message, refresh the auto-title too.
+    if index == 0:
+        info = sess.get_session(tid)
+        if info and info["title"].startswith(("New chat", "Untitled")):
+            sess.rename_session(tid, sess.auto_title(new_text))
+
+    stream_into_trace(_turn_inputs(new_text), config=cfg, trace=trimmed)
 
 
 # ---------------------------------------------------------------------------
-# Sidebar
+# Sidebar — sessions
 # ---------------------------------------------------------------------------
+
+ensure_current_session()
 
 with st.sidebar:
     st.title("💬 SmartFin")
-    st.caption(f"Thread: `{st.session_state.thread_id}`")
 
-    if st.button("🔄 New session", use_container_width=True):
-        st.session_state.thread_id = f"ui-{uuid.uuid4().hex[:8]}"
-        st.session_state.trace = []
-        st.session_state.pending_prompt = None
-        st.session_state.transactions_sent = False
+    if st.button("＋ New chat", type="primary", use_container_width=True):
+        new_tid = sess.create_session("New chat")
+        st.session_state.thread_id = new_tid
+        st.session_state.editing_index = None
         st.rerun()
+
+    st.divider()
+    st.caption("Chats")
+
+    for s in sess.list_sessions():
+        is_current = s["thread_id"] == st.session_state.thread_id
+        label = f"{'▸ ' if is_current else ''}{s['title']}"
+        cols = st.columns([5, 1])
+        if cols[0].button(
+            label,
+            key=f"pick-{s['thread_id']}",
+            use_container_width=True,
+            type="secondary" if not is_current else "primary",
+            help=relative_time(s["last_activity_at"]),
+        ):
+            st.session_state.thread_id = s["thread_id"]
+            st.session_state.editing_index = None
+            st.rerun()
+
+        with cols[1].popover("⋯", use_container_width=True):
+            new_title = st.text_input(
+                "Rename",
+                value=s["title"],
+                key=f"rename-input-{s['thread_id']}",
+            )
+            c1, c2 = st.columns(2)
+            if c1.button("Save", key=f"rename-save-{s['thread_id']}", use_container_width=True):
+                sess.rename_session(s["thread_id"], new_title)
+                st.rerun()
+            if c2.button("Delete", key=f"del-{s['thread_id']}", use_container_width=True):
+                try:
+                    app_graph.checkpointer.delete_thread(s["thread_id"])
+                except Exception:
+                    pass
+                sess.delete_session(s["thread_id"])
+                if s["thread_id"] == st.session_state.thread_id:
+                    st.session_state.thread_id = None  # ensure_current_session picks a new one
+                st.rerun()
 
     st.divider()
     st.session_state.monthly_income = st.number_input(
@@ -306,9 +435,10 @@ with st.sidebar:
         min_value=0.0,
     )
     st.session_state.use_sample = st.checkbox(
-        "Load 28 sample transactions on first turn",
+        "Send 28 sample transactions each turn",
         value=st.session_state.use_sample,
-        help="Loads tests/fixtures/sample_transactions.json into the graph state.",
+        help="Loads tests/fixtures/sample_transactions.json into the graph state. "
+             "Backend dedupes by transaction id.",
     )
 
     st.divider()
@@ -331,7 +461,8 @@ with st.sidebar:
             "2. Each agent runs and may set a `pending_confirmation`.\n"
             "3. The graph **pauses before** the `confirm` node — approve, reject, or type a clarification.\n"
             "4. Clarifications append a new user message and re-route through the supervisor.\n"
-            "5. When the queue empties, the graph terminates."
+            "5. Edit ✏️ on any user bubble to rewind the graph and re-run from that point.\n"
+            "6. Sessions + checkpoints persist to `.smartfin/*.db`."
         )
 
 
@@ -339,20 +470,62 @@ with st.sidebar:
 # Main chat
 # ---------------------------------------------------------------------------
 
-st.title("SmartFin Multi-Agent Chat")
+info = sess.get_session(st.session_state.thread_id)
+st.title(info["title"] if info else "SmartFin")
 st.caption(
-    "Type a message. Watch the supervisor dispatch specialist agents through the LangGraph pipeline, "
-    "with human-in-the-loop checkpoints after sensitive actions."
+    f"`{st.session_state.thread_id}` · "
+    "Type a message. Agents stream into the chat; HITL pauses surface as an Approve/Reject card below."
 )
 
-for entry in st.session_state.trace:
-    render_entry(entry)
+
+def render_user_entry(entry: dict, index: int) -> None:
+    with st.chat_message("user"):
+        if st.session_state.editing_index == index:
+            new_text = st.text_area(
+                "Edit message",
+                value=entry["content"],
+                key=f"edit-ta-{index}",
+                label_visibility="collapsed",
+            )
+            c1, c2 = st.columns([1, 1])
+            if c1.button("💾 Save & resend", key=f"edit-save-{index}", type="primary"):
+                st.session_state.editing_index = None
+                run_edit_resend(index, new_text)
+                st.rerun()
+            if c2.button("Cancel", key=f"edit-cancel-{index}"):
+                st.session_state.editing_index = None
+                st.rerun()
+        else:
+            cols = st.columns([10, 1])
+            cols[0].markdown(entry["content"])
+            if cols[1].button("✏️", key=f"edit-btn-{index}", help="Edit and resend"):
+                st.session_state.editing_index = index
+                st.rerun()
+
+
+def render_agent_entry(entry: dict) -> None:
+    emoji, name = AGENT_META.get(entry.get("agent", ""), ("🤖", entry.get("agent", "")))
+    with st.chat_message("assistant", avatar=emoji):
+        st.markdown(f"**{name}**  \n`{entry.get('agent', '')}`")
+        st.markdown(entry["content"])
+
+
+trace = get_trace()
+for i, entry in enumerate(trace):
+    if entry["role"] == "user":
+        render_user_entry(entry, i)
+    else:
+        render_agent_entry(entry)
+
+
+# ---------------------------------------------------------------------------
+# Input handling
+# ---------------------------------------------------------------------------
 
 paused_state = get_pending_interrupt(app_graph, graph_config())
 pending_payload = (paused_state or {}).get("pending_confirmation") if paused_state else None
 is_paused = bool(pending_payload) and "confirmed" not in pending_payload
 
-# Quick-prompt click is consumed in the same run via pending_prompt.
 if st.session_state.pending_prompt:
     prompt = st.session_state.pending_prompt
     st.session_state.pending_prompt = None
@@ -431,8 +604,7 @@ else:
     health = final.get("health_summary")
     alerts = final.get("alerts") or []
 
-    has_any = any([trends, cats, allocations, goals, anomaly_flags, health, alerts])
-    if not has_any:
+    if not any([trends, cats, allocations, goals, anomaly_flags, health, alerts]):
         st.stop()
 
     st.divider()
