@@ -59,14 +59,21 @@ Known monthly income from state:
 {state_income}
 """
 
-    result = structured_llm.invoke(prompt)
-
-    monthly_income = result.monthly_income if result.monthly_income is not None else state_income
-
-    return {
-        "intent": "budget_planning",
-        "user_message": result.user_message,
-        "monthly_income": monthly_income,
-        "categories_requested": result.categories_requested,
-        "needs_clarification": monthly_income is None,
-    }
+    try:
+        result = structured_llm.invoke(prompt)
+        monthly_income = result.monthly_income if result.monthly_income is not None else state_income
+        return {
+            "intent": "budget_planning",
+            "user_message": result.user_message,
+            "monthly_income": monthly_income,
+            "categories_requested": result.categories_requested,
+            "needs_clarification": monthly_income is None,
+        }
+    except Exception:
+        return {
+            "intent": "budget_planning",
+            "user_message": last_message,
+            "monthly_income": state_income,
+            "categories_requested": [],
+            "needs_clarification": state_income is None,
+        }

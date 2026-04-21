@@ -525,3 +525,114 @@ def test_budget_planning_node_invalid_expense_analysis_type(mock_extract):
 
     with pytest.raises(ValueError):
         budget_planning_node(state)
+
+
+# ---------------------------------------------------------------------------
+# extractor.py fallback tests
+# ---------------------------------------------------------------------------
+
+@patch("app.agents.budget_planning.extractor.ChatAnthropic")
+def test_extract_budget_request_llm_failure_falls_back_to_state_income(mock_chat_anthropic):
+    mock_llm = MagicMock()
+    mock_structured = MagicMock()
+    mock_structured.invoke.side_effect = RuntimeError("API down")
+    mock_llm.with_structured_output.return_value = mock_structured
+    mock_chat_anthropic.return_value = mock_llm
+
+    state = {
+        "messages": [DummyMessage("Help me plan my budget")],
+        "monthly_income": 4000,
+    }
+
+    result = extract_budget_request(state)
+
+    assert result["monthly_income"] == 4000
+    assert result["categories_requested"] == []
+    assert result["needs_clarification"] is False
+
+
+@patch("app.agents.budget_planning.extractor.ChatAnthropic")
+def test_extract_budget_request_llm_failure_no_state_income_needs_clarification(mock_chat_anthropic):
+    mock_llm = MagicMock()
+    mock_structured = MagicMock()
+    mock_structured.invoke.side_effect = RuntimeError("API down")
+    mock_llm.with_structured_output.return_value = mock_structured
+    mock_chat_anthropic.return_value = mock_llm
+
+    state = {
+        "messages": [DummyMessage("Help me plan my budget")],
+    }
+
+    result = extract_budget_request(state)
+
+    assert result["monthly_income"] is None
+    assert result["needs_clarification"] is True
+
+
+# ---------------------------------------------------------------------------
+# agent.py needs_clarification → pending_confirmation
+# ---------------------------------------------------------------------------
+
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_needs_clarification_sets_pending_confirmation(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Help me plan my budget",
+        "monthly_income": None,
+        "categories_requested": [],
+        "needs_clarification": True,
+    }
+
+    state = {
+        "messages": [DummyMessage("Help me plan my budget")],
+    }
+
+    result = budget_planning_node(state)
+
+    assert result["budget_summary"] == "More information is needed before generating a budget plan."
+    assert result["budget_warnings"] == []
+    assert result["budget_progress"] == {}
+    pc = result["pending_confirmation"]
+    assert pc is not None
+    assert pc["action"] == "clarify_budget_planning"
+    assert pc["agent"] == "budget_planning"
+    assert "summary" in pc
+    assert "details" in pc
+
+
+# ---------------------------------------------------------------------------
+# agent.py income category filter
+# ---------------------------------------------------------------------------
+
+@patch("app.agents.budget_planning.agent.extract_budget_request")
+def test_budget_planning_node_income_excluded_from_allocations(mock_extract):
+    mock_extract.return_value = {
+        "intent": "budget_planning",
+        "user_message": "Plan my budget",
+        "monthly_income": 5000,
+        "categories_requested": [],
+        "needs_clarification": False,
+    }
+
+    state = {
+        "messages": [DummyMessage("Plan my budget")],
+        "monthly_income": 5000,
+        "transactions": [],
+        "expense_analysis": {
+            "category_monthly_avg": {
+                "food": 500,
+                "income": 3200,
+            },
+            "category_trends": {
+                "food": "stable",
+                "income": "fixed",
+            },
+        },
+        "current_date": "2026-04-16",
+    }
+
+    result = budget_planning_node(state)
+
+    categories = [a.category for a in result["budget_allocations"]]
+    assert TransactionCategory.INCOME not in categories
+    assert TransactionCategory.FOOD in categories

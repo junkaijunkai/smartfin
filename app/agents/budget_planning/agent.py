@@ -30,6 +30,14 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["budget_summary"] = "More information is needed before generating a budget plan."
         state["budget_warnings"] = []
         state["budget_progress"] = {}
+        state["pending_confirmation"] = {
+            "action": "clarify_budget_planning",
+            "agent": "budget_planning",
+            "summary": "Monthly income is required to generate a budget plan.",
+            "details": [
+                "Please provide your monthly income so I can calculate budget allocations.",
+            ],
+        }
         return state
 
     monthly_income = extracted.get("monthly_income")
@@ -106,6 +114,8 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     allocation_list: list[BudgetAllocation] = []
     for cat, amount in budget_allocations.items():
+        if cat == TransactionCategory.INCOME.value:
+            continue
         try:
             category_enum = TransactionCategory(cat)
         except ValueError:
