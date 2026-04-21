@@ -2,16 +2,10 @@
 Goal Planning extractor — uses Claude to understand the user's latest message
 and extract structured financial goal information.
 
-This module is intentionally similar in spirit to expense_analysis/categoriser.py:
-- LLM is used for language understanding / field extraction
+Design principle:
+- LLM is used only for language understanding / field extraction
 - deterministic financial calculations remain in tracker.py
-
-Responsibilities:
-1. Detect whether the user is expressing a financial goal intent.
-2. Extract goal name, target amount, target date, and current saved amount.
-3. Return structured output for the Goal Planning agent to consume.
-4. Fall back gracefully if the LLM call fails.
-5. Support mock mode for local testing without an Anthropic API key.
+- testing concerns should stay in the test layer, not in production code
 """
 
 from __future__ import annotations
@@ -34,15 +28,15 @@ logger = logging.getLogger(__name__)
 
 class GoalExtractionResult(BaseModel):
     """
-    Structured result returned by the LLM.
+    结构化提取结果。
 
-    Fields:
-    - is_goal_intent: whether the message is about a savings / financial goal
-    - name: short goal name, e.g. "Laptop Fund"
-    - target_amount: target amount the user wants to save
-    - target_date: deadline / target completion date
-    - current_amount: how much the user has already saved for this goal
-    - missing_fields: required fields still missing for goal creation
+    字段说明：
+    - is_goal_intent: 用户是否表达了一个“财务目标 / 储蓄目标”
+    - name: 目标名称，例如 "Laptop Fund"
+    - target_amount: 目标金额
+    - target_date: 目标截止日期
+    - current_amount: 当前已存金额（如果用户提到了）
+    - missing_fields: 创建目标仍缺失的必要字段
     """
     is_goal_intent: bool = Field(
         description="True if the user is expressing or discussing a financial savings goal."
@@ -75,9 +69,9 @@ class GoalExtractionResult(BaseModel):
 
 def _build_prompt(user_message: str) -> str:
     """
-    Build the prompt for goal extraction.
+    构造给 LLM 的提示词。
 
-    We keep it explicit and schema-oriented so the LLM output is predictable.
+    这里尽量写得明确、结构化，方便模型稳定地产出 GoalExtractionResult。
     """
     return f"""
 You are a financial planning assistant for a personal finance AI system.
@@ -121,43 +115,64 @@ User message:
 # Fallback extraction
 # ---------------------------------------------------------------------------
 
+# 提取数字金额，例如 8000 / 1200.50
 _AMOUNT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
+
+# 仅支持简单的 YYYY-MM-DD 格式日期
 _DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 
 def _fallback_extract(user_message: str) -> GoalExtractionResult:
     """
-    Lightweight fallback when LLM extraction fails.
+    当 LLM 调用失败时使用的轻量级兜底逻辑。
 
-    This fallback is intentionally simple:
-    - detects rough goal intent using keywords
-    - extracts one numeric amount if present
-    - extracts YYYY-MM-DD date if present
+    这个 fallback 的目标不是“非常聪明”，而是：
+    1. 能识别大致 goal intent
+    2. 尽量提取金额和日期
+    3. 给 agent 提供一个可继续处理的结构化结果
     """
     msg = user_message.lower()
 
+    # 一组非常简单的关键词，用于粗粒度判断是否像是“财务目标”
     goal_keywords = [
         "save", "saving", "goal", "fund", "deposit",
         "emergency", "laptop", "travel", "holiday", "house"
     ]
     is_goal_intent = any(keyword in msg for keyword in goal_keywords)
 
+    # ------------------------------------------------------------------
+    # 先提取日期
+    # 这样后面提取金额时，可以先把日期字符串从文本里去掉，
+    # 避免把 2027-06-01 中的年份 2027 误识别成 target_amount
+    # ------------------------------------------------------------------
+    extracted_date: Optional[date] = None
+    date_match = _DATE_PATTERN.search(user_message)
+    message_without_date = user_message
+
+    if date_match:
+        try:
+            date_str = date_match.group(1)
+            extracted_date = date.fromisoformat(date_str)
+
+            # 从原始消息中去掉日期片段，再做金额匹配
+            message_without_date = user_message.replace(date_str, " ")
+        except ValueError:
+            extracted_date = None
+
+    # ------------------------------------------------------------------
+    # 再提取金额
+    # 注意：这里使用“去掉日期后的文本”来做匹配，
+    # 就不会把日期中的年份误当成金额了
+    # ------------------------------------------------------------------
     extracted_amount: Optional[float] = None
-    amount_match = _AMOUNT_PATTERN.search(msg)
+    amount_match = _AMOUNT_PATTERN.search(message_without_date)
     if amount_match:
         try:
             extracted_amount = float(amount_match.group(1))
         except ValueError:
             extracted_amount = None
 
-    extracted_date: Optional[date] = None
-    date_match = _DATE_PATTERN.search(user_message)
-    if date_match:
-        try:
-            extracted_date = date.fromisoformat(date_match.group(1))
-        except ValueError:
-            extracted_date = None
-
+    # 根据关键词给一个比较自然的目标名称
     goal_name: Optional[str] = None
     if "laptop" in msg:
         goal_name = "Laptop Fund"
@@ -168,8 +183,10 @@ def _fallback_extract(user_message: str) -> GoalExtractionResult:
     elif "house" in msg or "deposit" in msg:
         goal_name = "House Deposit Fund"
     elif is_goal_intent:
+        # 如果看起来像 goal intent，但识别不出具体类别
         goal_name = "Financial Goal"
 
+    # 如果用户表达了 goal intent，但缺少必要字段，就记录缺失项
     missing_fields: list[str] = []
     if is_goal_intent:
         if extracted_amount is None:
@@ -188,60 +205,51 @@ def _fallback_extract(user_message: str) -> GoalExtractionResult:
 
 
 # ---------------------------------------------------------------------------
-# Mock mode
-# ---------------------------------------------------------------------------
-
-def _mock_extract(user_message: str) -> GoalExtractionResult:
-    """
-    Mock extractor for local testing without an Anthropic API key.
-
-    Strategy:
-    - reuse fallback parsing
-    - but always behave as if extraction succeeded
-    - supports inputs like:
-      'I want to save 8000 by 2027-06-01 for a laptop.'
-    """
-    return _fallback_extract(user_message)
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def extract_goal_from_message(user_message: str) -> tuple[GoalExtractionResult, bool]:
     """
-    Extract structured goal information from a user message.
+    从用户消息中提取结构化的 goal 信息。
 
-    Returns:
+    返回：
         (result, llm_succeeded)
 
-    - result: structured extraction result
-    - llm_succeeded: True if the result came from Claude or mock mode,
-                     False if fallback was used after a real LLM failure
+    - result: 结构化提取结果
+    - llm_succeeded:
+        True  -> 真实 LLM 路径成功
+        False -> LLM 调用失败，退回 fallback
+
+    注意：
+    - 空消息不算失败，直接返回一个“非 goal intent”的结果
+    - 测试时不要在这里写 mock 逻辑，应该在 pytest 中 patch ChatAnthropic
     """
 
+    # 空输入时，直接返回一个“没有 goal intent”的结果
     if not user_message.strip():
         return GoalExtractionResult(
             is_goal_intent=False,
             missing_fields=[],
         ), True
 
-    # Mock mode for local testing
-    # PowerShell:
-    #   $env:SMARTFIN_MOCK_LLM="true"
-    mock_mode = os.getenv("SMARTFIN_MOCK_LLM", "").lower() == "true"
-    if mock_mode:
-        logger.info("SMARTFIN_MOCK_LLM=true, using mock goal extractor.")
-        return _mock_extract(user_message), True
-
+    # 允许通过环境变量覆盖模型名，但不再在生产代码里放 mock mode
     model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
 
     try:
+        # 创建 Anthropic chat model
         llm = ChatAnthropic(model=model_name)
+
+        # 要求模型按 GoalExtractionResult 结构化输出
         structured_llm = llm.with_structured_output(GoalExtractionResult)
+
+        # 构造 prompt
         prompt = _build_prompt(user_message)
+
+        # 调用模型并拿到结构化结果
         result: GoalExtractionResult = structured_llm.invoke(prompt)
         return result, True
+
     except Exception as exc:
+        # 一旦 LLM 出错，记录日志并启用 fallback
         logger.warning("Goal extraction failed, using fallback extractor: %s", exc)
         return _fallback_extract(user_message), False
