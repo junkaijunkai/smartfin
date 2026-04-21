@@ -385,3 +385,213 @@ class TestExpenseAnalysisAgentNode:
         assert result["categorised_transactions"] == []
         assert result["spending_trends"] == []
         assert result["pending_confirmation"] is not None
+
+    # =========================================================================
+    # Incremental processing tests
+    # =========================================================================
+
+    def test_incremental_only_new_transactions_no_existing(self):
+        """First run: only new transactions, no existing categorised data."""
+        txs = [_tx("n1", 5, 100.0, TransactionCategory.FOOD)]
+        chain = _mock_chain([("n1", TransactionCategory.FOOD)])
+
+        state = self._make_state(txs)
+        state["categorised_transactions"] = []
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result = expense_analysis_run(state)
+
+        assert len(result["categorised_transactions"]) == 1
+        assert result["categorised_transactions"][0].id == "n1"
+        assert len(result["spending_trends"]) == 1
+
+    def test_incremental_only_existing_data_no_new_transactions(self):
+        """Second run: no new transactions, reuse existing categorised data."""
+        existing_tx = _tx("e1", 5, 100.0, TransactionCategory.FOOD)
+
+        state = self._make_state([])  # transactions is empty
+        state["categorised_transactions"] = [existing_tx]
+
+        result = expense_analysis_run(state)
+
+        assert len(result["categorised_transactions"]) == 1
+        assert result["categorised_transactions"][0].id == "e1"
+        assert len(result["spending_trends"]) == 1
+
+    def test_incremental_merge_existing_and_new_transactions(self):
+        """Third run: merge existing data with new transactions."""
+        existing_tx = _tx("e1", 5, 100.0, TransactionCategory.FOOD)
+        new_tx = _tx("n1", 5, 50.0, TransactionCategory.FOOD)
+
+        state = self._make_state([new_tx])
+        state["categorised_transactions"] = [existing_tx]
+
+        chain = _mock_chain([("n1", TransactionCategory.FOOD)])
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result = expense_analysis_run(state)
+
+        # Should have both existing and new
+        assert len(result["categorised_transactions"]) == 2
+        ids = {t.id for t in result["categorised_transactions"]}
+        assert ids == {"e1", "n1"}
+
+    def test_incremental_trends_calculated_on_merged_data(self):
+        """Trends should be calculated on the full merged dataset."""
+        # Existing: 100 current, 80 previous
+        existing_tx1 = _tx("e1", 5, 100.0, TransactionCategory.FOOD)
+        existing_tx2 = _tx("e2", 35, 80.0, TransactionCategory.FOOD)
+
+        # New: 50 current (additional)
+        new_tx = _tx("n1", 5, 50.0, TransactionCategory.FOOD)
+
+        state = self._make_state([new_tx])
+        state["categorised_transactions"] = [existing_tx1, existing_tx2]
+
+        chain = _mock_chain([("n1", TransactionCategory.FOOD)])
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result = expense_analysis_run(state)
+
+        # Current period total = 100 + 50 = 150 (both existing and new)
+        # Previous period total = 80
+        trend = result["spending_trends"][0]
+        assert trend.category == TransactionCategory.FOOD
+        assert trend.current_period_total == 150.0
+        assert trend.previous_period_total == 80.0
+        assert trend.deviation_pct == pytest.approx(87.5)  # (150-80)/80 * 100
+
+    def test_incremental_filters_duplicate_transaction_ids(self):
+        """Transactions with duplicate IDs should not be processed twice."""
+        existing_tx = _tx("dup1", 5, 100.0, TransactionCategory.FOOD)
+
+        state = self._make_state([existing_tx])  # same transaction in new list
+        state["categorised_transactions"] = [existing_tx]
+
+        chain = _mock_chain([])  # LLM should NOT be called
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            with patch("app.agents.expense_analysis.categoriser.categorise_transactions") as mock_cat:
+                mock_cat.return_value = ([], True)
+                result = expense_analysis_run(state)
+
+        # Only the existing transaction should be in the result
+        assert len(result["categorised_transactions"]) == 1
+        assert result["categorised_transactions"][0].id == "dup1"
+
+    def test_incremental_new_categorisation_fails_falls_back_to_keyword(self):
+        """If new transaction LLM categorisation fails, fallback uses keywords."""
+        existing_tx = _tx("e1", 5, 100.0, TransactionCategory.FOOD)
+        new_tx = _tx("n1", 5, 50.0, TransactionCategory.SHOPPING)
+
+        state = self._make_state([new_tx])
+        state["categorised_transactions"] = [existing_tx]
+
+        chain = MagicMock()
+        chain.invoke.side_effect = RuntimeError("API down")
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            with patch("app.agents.expense_analysis.categoriser.time.sleep"):
+                result = expense_analysis_run(state)
+
+        # Should return merged data: existing + new (with keyword fallback)
+        assert len(result["categorised_transactions"]) == 2
+        ids = {t.id for t in result["categorised_transactions"]}
+        assert ids == {"e1", "n1"}
+        assert result["pending_confirmation"]["categorisation_confidence"] == "fallback_keywords"
+
+    # =========================================================================
+    # New return field tests
+    # =========================================================================
+
+    def test_expense_analysis_dict_contains_monthly_avg_and_trends(self):
+        """expense_analysis dict must contain category_monthly_avg and category_trends."""
+        txs = [
+            _tx("e1", 5, 100.0, TransactionCategory.FOOD),
+            _tx("e2", 35, 80.0, TransactionCategory.FOOD),
+        ]
+        chain = _mock_chain([
+            ("e1", TransactionCategory.FOOD),
+            ("e2", TransactionCategory.FOOD),
+        ])
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result = expense_analysis_run(self._make_state(txs))
+
+        assert "expense_analysis" in result
+        assert "category_monthly_avg" in result["expense_analysis"]
+        assert "category_trends" in result["expense_analysis"]
+        assert isinstance(result["expense_analysis"]["category_monthly_avg"], dict)
+        assert isinstance(result["expense_analysis"]["category_trends"], dict)
+
+    def test_category_monthly_avg_maps_categories_to_current_period_totals(self):
+        """category_monthly_avg should map category names to current period spending."""
+        txs = [
+            _tx("e1", 5, 150.0, TransactionCategory.FOOD),
+            _tx("e2", 5, 50.0, TransactionCategory.TRANSPORT),
+            _tx("e3", 35, 80.0, TransactionCategory.FOOD),  # previous period
+        ]
+        chain = _mock_chain([
+            ("e1", TransactionCategory.FOOD),
+            ("e2", TransactionCategory.TRANSPORT),
+            ("e3", TransactionCategory.FOOD),
+        ])
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result = expense_analysis_run(self._make_state(txs))
+
+        avg = result["expense_analysis"]["category_monthly_avg"]
+        assert avg["food"] == 150.0  # only current period
+        assert avg["transport"] == 50.0
+
+    def test_category_trends_classifies_deviation_correctly(self):
+        """category_trends should classify trends as fixed/rising/volatile/stable."""
+        txs = [
+            _tx("t1", 5, 110.0, TransactionCategory.FOOD),      # +10% → rising
+            _tx("t2", 5, 90.0, TransactionCategory.TRANSPORT),  # -10% → volatile
+            _tx("t3", 5, 105.0, TransactionCategory.SHOPPING),  # +5% → stable
+            _tx("t4", 5, 50.0, TransactionCategory.HEALTHCARE), # no prev → fixed
+            # previous period
+            _tx("t1p", 35, 100.0, TransactionCategory.FOOD),
+            _tx("t2p", 35, 100.0, TransactionCategory.TRANSPORT),
+            _tx("t3p", 35, 100.0, TransactionCategory.SHOPPING),
+        ]
+        chain = _mock_chain([
+            ("t1", TransactionCategory.FOOD),
+            ("t2", TransactionCategory.TRANSPORT),
+            ("t3", TransactionCategory.SHOPPING),
+            ("t4", TransactionCategory.HEALTHCARE),
+            ("t1p", TransactionCategory.FOOD),
+            ("t2p", TransactionCategory.TRANSPORT),
+            ("t3p", TransactionCategory.SHOPPING),
+        ])
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            result = expense_analysis_run(self._make_state(txs))
+
+        trends = result["expense_analysis"]["category_trends"]
+        assert trends["food"] == "rising"
+        assert trends["transport"] == "volatile"
+        assert trends["shopping"] == "stable"
+        assert trends["healthcare"] == "fixed"
+
+    def test_expense_analysis_returned_on_llm_failure_fallback(self):
+        """Even when LLM fails and fallback is used, expense_analysis dict is returned."""
+        txs = [_tx("f1", 5, 100.0, TransactionCategory.FOOD)]
+        chain = MagicMock()
+        chain.invoke.side_effect = RuntimeError("API down")
+
+        with patch("app.agents.expense_analysis.categoriser.ChatAnthropic") as MockLLM:
+            MockLLM.return_value.with_structured_output.return_value = chain
+            with patch("app.agents.expense_analysis.categoriser.time.sleep"):
+                result = expense_analysis_run(self._make_state(txs))
+
+        assert "expense_analysis" in result
+        assert "category_monthly_avg" in result["expense_analysis"]
+        assert "category_trends" in result["expense_analysis"]
+        assert result["pending_confirmation"]["categorisation_confidence"] == "fallback_keywords"
