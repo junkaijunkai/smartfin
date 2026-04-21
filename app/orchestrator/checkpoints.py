@@ -51,27 +51,53 @@ def get_pending_interrupt(graph, config: dict) -> dict | None:
     return None
 
 
-def resume_with_confirmation(graph, config: dict, confirmed: bool) -> dict:
+def resume_with_confirmation(graph, config: dict, confirmed: bool, user_message: str | None = None) -> dict:
     """
-    Resume a paused graph after the user has accepted or rejected the
-    pending action.
+    Resume a paused graph after the user has accepted, rejected, or provided
+    additional information for the pending action.
 
     LangGraph resumes by calling graph.invoke(state_update, config).
     Passing None as the first argument means "use the existing checkpointed
     state"; we only need to patch the fields that changed.
 
     Args:
-        graph:     The compiled StateGraph (returned by build_graph()).
-        config:    The same thread config dict that was used to start the run.
-                   Must contain {"configurable": {"thread_id": "..."}}.
-        confirmed: True = user approved the pending action,
-                   False = user rejected it.
+        graph:       The compiled StateGraph (returned by build_graph()).
+        config:      The same thread config dict that was used to start the run.
+                     Must contain {"configurable": {"thread_id": "..."}}.
+        confirmed:   True = user approved the pending action,
+                     False = user rejected/cancelled it.
+        user_message: (Optional) When action is "clarify_*", user can provide
+                     supplementary information here. The message is appended
+                     to the messages list and the graph re-routes to the
+                     original agent with new context.
 
     Returns:
         The final AppState dict after the graph resumes and finishes.
+
+    Example usage for clarification:
+        >>> # User rejected missing fields prompt and now provides clarification
+        >>> resume_with_confirmation(
+        ...     graph, config,
+        ...     confirmed=True,  # confirmed=True indicates "user provided info"
+        ...     user_message="I want to save $8000 by June 2027"
+        ... )
     """
-    # Patch only the fields that communicate the user's decision back to the graph.
+    from langchain_core.messages import HumanMessage
+
+    # Patch the fields that communicate the user's decision back to the graph
     update = {
         "pending_confirmation": {"confirmed": confirmed},
     }
+
+    # If user provided clarification, append it to messages and reset active_agent
+    # so the supervisor re-routes to the appropriate agent with new context
+    if user_message and confirmed:
+        messages = list((update.get("messages") or []) or [])
+        messages.append(HumanMessage(content=user_message))
+        update["messages"] = messages
+
+        # Reset active_agent so supervisor makes a fresh routing decision
+        # based on the new user message
+        update["active_agent"] = None
+
     return graph.invoke(update, config)

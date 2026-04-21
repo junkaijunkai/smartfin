@@ -193,14 +193,30 @@ def confirm_node(state: AppState) -> dict:
     presents it to the user, then calls resume_with_confirmation() from
     checkpoints.py to continue.
 
-    When this node finally executes, pending_confirmation["confirmed"] is
-    already set by the resume call, so we just clear the pending payload.
+    Two scenarios:
+      1. User approved/rejected: just clear pending_confirmation
+      2. User provided clarification: re-route to supervisor for fresh routing
+         decision based on the new user message
+
+    When user provides clarification (e.g., "I want to save $8000 by June 2027"
+    in response to missing fields prompt), active_agent is set to None to
+    trigger supervisor re-routing on the next cycle.
     """
     confirmation = state.get("pending_confirmation", {})
+    action = confirmation.get("action")
+
     if confirmation.get("confirmed"):
+        print(f"[confirm] User approved action: {action}")
+
+        # If user provided clarification (indicated by active_agent being None),
+        # the supervisor will route to the appropriate agent with the new message
+        if state.get("active_agent") is None and len(state.get("messages", [])) > 0:
+            print("[confirm] User provided clarification, supervisor will re-route.")
+            return {"pending_confirmation": None}
+
         print("[confirm] User approved the pending action.")
     else:
-        print("[confirm] User rejected the pending action.")
+        print(f"[confirm] User rejected the pending action: {action}")
 
     # Clear the pending confirmation so the next cycle starts clean
     return {"pending_confirmation": None}
