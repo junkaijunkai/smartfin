@@ -358,8 +358,10 @@ def test_build_goal_from_extraction_uses_defaults():
         missing_fields=[],
     )
 
-    goal = goal_agent_module._build_goal_from_extraction(extraction)
+    goal, error = goal_agent_module._build_goal_from_extraction(extraction)
 
+    assert goal is not None
+    assert error == ""
     assert goal.id.startswith("goal-")
     assert goal.name == "Financial Goal"
     assert goal.target_amount == 3000.0
@@ -639,3 +641,337 @@ def test_goal_planning_agent_uses_fallback_confidence_for_non_goal_intent(monkey
     result = goal_planning_run(state)
 
     assert result["pending_confirmation"]["goal_extraction_confidence"] == "fallback"
+
+
+# ---------------------------------------------------------------------------
+# Validation layer tests
+# ---------------------------------------------------------------------------
+
+
+def test_validate_extraction_consistency_passes_when_consistent():
+    """
+    测试：当 missing_fields 与实际缺失字段一致时，验证应通过。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_extraction_consistency(extraction)
+
+    assert is_valid is True
+    assert error == ""
+
+
+def test_validate_extraction_consistency_fails_when_missing_target_amount_not_recorded():
+    """
+    测试：当 target_amount 为 None 但 missing_fields 中没有记录时，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=None,  # ← 实际缺失
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],  # ← 但没有记录缺失
+    )
+
+    is_valid, error = goal_agent_module._validate_extraction_consistency(extraction)
+
+    assert is_valid is False
+    assert "Extraction inconsistency" in error
+    assert "target_amount" in error
+
+
+def test_validate_extraction_consistency_fails_when_missing_target_date_not_recorded():
+    """
+    测试：当 target_date 为 None 但 missing_fields 中没有记录时，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=None,  # ← 实际缺失
+        current_amount=None,
+        missing_fields=[],  # ← 但没有记录缺失
+    )
+
+    is_valid, error = goal_agent_module._validate_extraction_consistency(extraction)
+
+    assert is_valid is False
+    assert "Extraction inconsistency" in error
+    assert "target_date" in error
+
+
+def test_validate_extraction_consistency_ignores_non_goal_intent():
+    """
+    测试：当 is_goal_intent=False 时，missing_fields 不需要与字段一致。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=False,  # ← 不是 goal intent
+        name=None,
+        target_amount=None,
+        target_date=None,
+        current_amount=None,
+        missing_fields=[],  # ← 即使缺失多个字段也不计入
+    )
+
+    is_valid, error = goal_agent_module._validate_extraction_consistency(extraction)
+
+    assert is_valid is True
+    assert error == ""
+
+
+def test_validate_goal_creation_fields_passes_when_all_valid():
+    """
+    测试：所有必要字段都存在且有效时，验证通过。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=date.today() + timedelta(days=180),
+        current_amount=1000.0,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is True
+    assert error == ""
+
+
+def test_validate_goal_creation_fields_fails_when_target_amount_zero():
+    """
+    测试：target_amount 为 0 时，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=0.0,  # ← 无效：必须 > 0
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is False
+    assert "must be positive" in error
+
+
+def test_validate_goal_creation_fields_fails_when_target_amount_negative():
+    """
+    测试：target_amount 为负数时，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=-5000.0,  # ← 无效：负数
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is False
+    assert "must be positive" in error
+
+
+def test_validate_goal_creation_fields_fails_when_target_date_in_past():
+    """
+    测试：target_date 在过去时，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=date.today() - timedelta(days=10),  # ← 无效：在过去
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is False
+    assert "must be in the future" in error
+
+
+def test_validate_goal_creation_fields_fails_when_target_date_is_today():
+    """
+    测试：target_date 是今天时，验证应失败（目标必须在未来）。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=date.today(),  # ← 无效：必须在未来
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is False
+    assert "must be in the future" in error
+
+
+def test_validate_goal_creation_fields_fails_when_not_goal_intent():
+    """
+    测试：is_goal_intent=False 时，不能创建 goal，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=False,  # ← 不是 goal intent
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is False
+    assert "Not a goal intent" in error
+
+
+def test_validate_goal_creation_fields_fails_when_missing_fields_not_empty():
+    """
+    测试：missing_fields 不为空时，不能创建 goal，验证应失败。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=5000.0,
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=["target_amount"],  # ← 还有缺失字段
+    )
+
+    is_valid, error = goal_agent_module._validate_goal_creation_fields(extraction)
+
+    assert is_valid is False
+    assert "Missing required fields" in error
+    assert "target_amount" in error
+
+
+def test_build_goal_from_extraction_fails_when_data_inconsistent(monkeypatch):
+    """
+    测试：当提取结果不一致时，_build_goal_from_extraction 应返回 (None, error_msg)。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=None,  # ← 缺失但未记录
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    goal, error = goal_agent_module._build_goal_from_extraction(extraction)
+
+    assert goal is None
+    assert "Extraction inconsistency" in error
+
+
+def test_build_goal_from_extraction_fails_when_validation_fails(monkeypatch):
+    """
+    测试：当字段验证失败时，_build_goal_from_extraction 应返回 (None, error_msg)。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=0.0,  # ← 无效：必须 > 0
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    goal, error = goal_agent_module._build_goal_from_extraction(extraction)
+
+    assert goal is None
+    assert "must be positive" in error
+
+
+def test_build_goal_from_extraction_succeeds_when_all_valid(monkeypatch):
+    """
+    测试：当所有验证通过时，_build_goal_from_extraction 应返回有效的 FinancialGoal。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name="Laptop Fund",
+        target_amount=8000.0,
+        target_date=date.today() + timedelta(days=180),
+        current_amount=2000.0,
+        missing_fields=[],
+    )
+
+    goal, error = goal_agent_module._build_goal_from_extraction(extraction)
+
+    assert goal is not None
+    assert error == ""
+    assert goal.name == "Laptop Fund"
+    assert goal.target_amount == 8000.0
+    assert goal.current_amount == 2000.0
+    assert goal.target_date == date.today() + timedelta(days=180)
+
+
+def test_build_goal_from_extraction_uses_fallback_name_when_none(monkeypatch):
+    """
+    测试：当 extraction.name 为 None 时，应使用默认名称 "Financial Goal"。
+    """
+    extraction = GoalExtractionResult(
+        is_goal_intent=True,
+        name=None,  # ← 名称缺失
+        target_amount=5000.0,
+        target_date=date.today() + timedelta(days=180),
+        current_amount=None,
+        missing_fields=[],
+    )
+
+    goal, error = goal_agent_module._build_goal_from_extraction(extraction)
+
+    assert goal is not None
+    assert error == ""
+    assert goal.name == "Financial Goal"
+
+
+def test_goal_planning_agent_handles_validation_failure_gracefully(monkeypatch):
+    """
+    测试：当 goal 创建验证失败时，agent 应返回 clarify_goal_planning，
+    而不是抛异常。
+    """
+    # Mock extractor 返回数据不一致的结果
+    monkeypatch.setattr(
+        goal_agent_module,
+        "extract_goal_from_message",
+        lambda _: (
+            GoalExtractionResult(
+                is_goal_intent=True,
+                name="Laptop Fund",
+                target_amount=None,  # ← 缺失但未记录
+                target_date=date.today() + timedelta(days=180),
+                current_amount=None,
+                missing_fields=[],
+            ),
+            True,
+        ),
+    )
+
+    state = _make_state(
+        goals=[],
+        monthly_income=3000.0,
+        budget_allocations=[],
+    )
+
+    result = goal_planning_run(state)
+
+    # 应返回 clarify 而不是创建目标
+    assert result["goals"] == []
+    assert result["pending_confirmation"]["action"] == "clarify_goal_planning"
+    assert "Extraction inconsistency" in result["pending_confirmation"]["details"][0]

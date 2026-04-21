@@ -16,11 +16,92 @@ Design principle:
 
 from __future__ import annotations
 
+import logging
+from datetime import date
 from uuid import uuid4
 
 from app.state import AppState, FinancialGoal
 from app.agents.goal_planning.tracker import calculate_required_monthly_saving
-from app.agents.goal_planning.extractor import extract_goal_from_message
+from app.agents.goal_planning.extractor import extract_goal_from_message, GoalExtractionResult
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Validation layer
+# ---------------------------------------------------------------------------
+
+
+def _validate_extraction_consistency(extraction: GoalExtractionResult) -> tuple[bool, str]:
+    """
+    验证提取结果的一致性：missing_fields 应该准确反映缺失的字段。
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if not extraction.is_goal_intent:
+        return True, ""
+
+    actual_missing = []
+    if extraction.target_amount is None:
+        actual_missing.append("target_amount")
+    if extraction.target_date is None:
+        actual_missing.append("target_date")
+
+    # 检查 missing_fields 与实际缺失字段是否一致
+    expected_missing = set(extraction.missing_fields)
+    actual_missing_set = set(actual_missing)
+
+    if expected_missing != actual_missing_set:
+        error = (
+            f"Extraction inconsistency: missing_fields={list(expected_missing)} "
+            f"but actual missing fields={actual_missing}. "
+            f"This may indicate a bug in the extractor or LLM output."
+        )
+        logger.warning(error)
+        return False, error
+
+    return True, ""
+
+
+def _validate_goal_creation_fields(extraction: GoalExtractionResult) -> tuple[bool, str]:
+    """
+    验证 Goal 创建所需的字段完整性。
+
+    Goal 创建前的必要条件：
+    - is_goal_intent = True
+    - missing_fields = [] (空列表，所有必要字段都存在)
+    - target_amount 不为 None 且 > 0
+    - target_date 不为 None 且在未来
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if not extraction.is_goal_intent:
+        return False, "Not a goal intent"
+
+    if extraction.missing_fields:
+        return False, f"Missing required fields: {', '.join(extraction.missing_fields)}"
+
+    if extraction.target_amount is None:
+        return False, "target_amount is None despite missing_fields being empty"
+
+    if extraction.target_amount <= 0:
+        return (
+            False,
+            f"target_amount must be positive, got {extraction.target_amount}"
+        )
+
+    if extraction.target_date is None:
+        return False, "target_date is None despite missing_fields being empty"
+
+    if extraction.target_date <= date.today():
+        return (
+            False,
+            f"target_date must be in the future, got {extraction.target_date}"
+        )
+
+    return True, ""
 
 
 def _get_latest_message_text(state: AppState) -> str:
@@ -43,19 +124,41 @@ def _get_latest_message_text(state: AppState) -> str:
     return str(last_message)
 
 
-def _build_goal_from_extraction(extraction) -> FinancialGoal:
+def _build_goal_from_extraction(extraction: GoalExtractionResult) -> tuple[FinancialGoal | None, str]:
     """
     Convert the structured extraction result into a FinancialGoal object.
 
-    Assumes required fields already exist.
+    验证所有必要字段后才创建 Goal 对象。
+
+    Returns:
+        (goal_object, error_message)
+        - goal_object: 创建成功时返回 FinancialGoal，失败时返回 None
+        - error_message: 验证失败时的错误信息，成功时为空字符串
     """
-    return FinancialGoal(
-        id=f"goal-{uuid4().hex[:8]}",
-        name=extraction.name or "Financial Goal",
-        target_amount=float(extraction.target_amount),
-        current_amount=float(extraction.current_amount or 0.0),
-        target_date=extraction.target_date,
-    )
+    # 第一步：验证提取结果的一致性
+    is_consistent, consistency_error = _validate_extraction_consistency(extraction)
+    if not is_consistent:
+        return None, consistency_error
+
+    # 第二步：验证 Goal 创建所需的所有字段
+    is_valid, validation_error = _validate_goal_creation_fields(extraction)
+    if not is_valid:
+        return None, validation_error
+
+    # 第三步：所有验证通过，创建 Goal 对象
+    try:
+        goal = FinancialGoal(
+            id=f"goal-{uuid4().hex[:8]}",
+            name=extraction.name or "Financial Goal",
+            target_amount=float(extraction.target_amount),
+            current_amount=float(extraction.current_amount or 0.0),
+            target_date=extraction.target_date,
+        )
+        return goal, ""
+    except (ValueError, TypeError) as e:
+        error_msg = f"Failed to create FinancialGoal: {str(e)}"
+        logger.error(error_msg)
+        return None, error_msg
 
 
 def run(state: AppState) -> dict:
@@ -117,8 +220,32 @@ def run(state: AppState) -> dict:
                 "pending_confirmation": pending_confirmation,
             }
 
-        # 信息完整 → 创建新目标并加入现有 goals
-        new_goal = _build_goal_from_extraction(extraction)
+        # 信息完整 → 尝试创建新目标
+        new_goal, creation_error = _build_goal_from_extraction(extraction)
+
+        if new_goal is None:
+            # 创建失败（例如数据不一致或验证失败）
+            logger.error(
+                f"Failed to create goal from extraction: {creation_error}. "
+                f"Extraction: {extraction}"
+            )
+            pending_confirmation = {
+                "action": "clarify_goal_planning",
+                "agent": "goal_planning",
+                "summary": "Goal extraction validation failed.",
+                "details": [
+                    f"Error: {creation_error}",
+                    "This may indicate a data issue. Please try again with clearer information.",
+                ],
+                "goal_extraction_confidence": "llm" if llm_succeeded else "fallback",
+            }
+
+            return {
+                "goals": goals,
+                "pending_confirmation": pending_confirmation,
+            }
+
+        # 创建成功 → 加入现有 goals
         goals.append(new_goal)
         new_goal_added = True
 
