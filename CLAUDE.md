@@ -9,7 +9,19 @@
 ```bash
 git pull --rebase
 cp .env.example .env        # fill in ANTHROPIC_API_KEY, LANGCHAIN_API_KEY
-pip install -r requirements.txt
+# create venv
+uv init
+uv venv
+# activate venv
+# for Windows Powershell
+.venv/Scripts/activate.ps1 
+# for Windows Bash
+.venv/Scripts/activate
+# for Linux/MacOS
+source .venv/bin/activate
+# install dependencies
+uv pip install -r requirements.txt # or uv sync
+# run UI
 streamlit run ui/app.py (currently is a stub)
 ```
 
@@ -35,3 +47,4 @@ streamlit run ui/app.py (currently is a stub)
 2. Never commit or push directly to `main`
 3. All changes must be branched off `dev`
 4. Branch type and commit type must match → see `CONTRIBUTING.md`
+5. Always activate venv before any code run

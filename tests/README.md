@@ -2,7 +2,7 @@
 
 ## Setup
 
-First, activate the virtual environment:
+First, always activate the virtual environment:
 
 ```bash
 source .venv/bin/activate  # macOS/Linux
