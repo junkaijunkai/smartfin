@@ -1,17 +1,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
-
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from app.config import get_default_model_name, is_model_approved, load_model_registry, resolve_model_name
-from app.guardrails.input_filter import scan_input
-from app.guardrails.output_validator import validate_output
-
+from pathlib import Path
 
 INPUT_CASES = [
     {
@@ -55,8 +46,22 @@ def _print_result(name: str, passed: bool, details: str) -> None:
     print(f"[{status}] {name}: {details}")
 
 
+def _ensure_repo_root_on_path() -> None:
+    root = Path(__file__).resolve().parent.parent
+    root_str = str(root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
 
 def _run_registry_checks() -> list[str]:
+    _ensure_repo_root_on_path()
+    from app.config import (
+        get_default_model_name,
+        is_model_approved,
+        load_model_registry,
+        resolve_model_name,
+    )
+
     failures: list[str] = []
     registry = load_model_registry()
     approved_models = registry.get("approved_models", {})
@@ -82,8 +87,10 @@ def _run_registry_checks() -> list[str]:
     return failures
 
 
-
 def _run_input_checks() -> list[str]:
+    _ensure_repo_root_on_path()
+    from app.guardrails.input_filter import scan_input
+
     failures: list[str] = []
     for case in INPUT_CASES:
         result = scan_input(case["text"])
@@ -94,8 +101,10 @@ def _run_input_checks() -> list[str]:
     return failures
 
 
-
 def _run_output_checks() -> list[str]:
+    _ensure_repo_root_on_path()
+    from app.guardrails.output_validator import validate_output
+
     failures: list[str] = []
     for case in OUTPUT_CASES:
         result = validate_output(case["text"])
@@ -106,8 +115,10 @@ def _run_output_checks() -> list[str]:
     return failures
 
 
-
 def main() -> int:
+    _ensure_repo_root_on_path()
+    from app.config import get_default_model_name
+
     failures: list[str] = []
 
     registry_failures = _run_registry_checks()
