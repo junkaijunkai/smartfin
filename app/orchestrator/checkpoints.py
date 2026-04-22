@@ -8,10 +8,11 @@ Two distinct concepts live here:
    and stores it via the checkpointer.  This lets us:
      - Resume a paused graph (e.g. after HITL interrupt) without losing state.
      - Replay or inspect any past execution step.
+     - Rewind to an earlier checkpoint and re-run (used by the UI's
+       edit-and-resend feature).
 
-   In production you would swap MemorySaver for SqliteSaver or a
-   Postgres-backed checkpointer.  For development / demo, MemorySaver
-   (in-process dict) is sufficient.
+   We persist checkpoints in a local SQLite file under .smartfin/
+   so sessions survive server restarts.
 
 2. HITL helpers — thin wrappers that the UI / CLI layer calls to
    resume a graph that has been paused by interrupt_before.
@@ -19,14 +20,17 @@ Two distinct concepts live here:
    (see graph.py); these helpers handle the resume flow.
 """
 
-from langgraph.checkpoint.memory import MemorySaver
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 # ---------------------------------------------------------------------------
 # Checkpointer instance
 # ---------------------------------------------------------------------------
-# A single shared instance is fine for in-process use.
-# Import this wherever you need to compile or resume the graph.
 
 # Register all Pydantic state models so LangGraph's JsonPlusSerializer doesn't
 # emit a WARNING for each object when deserializing checkpointed state.
@@ -47,7 +51,22 @@ _serde = JsonPlusSerializer(
     ]
 )
 
-memory_checkpointer = MemorySaver(serde=_serde)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = _REPO_ROOT / ".smartfin"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CHECKPOINT_DB_PATH = DATA_DIR / "chatbot.db"
+
+# check_same_thread=False because Streamlit serves each rerun on a different
+# worker thread; the sqlite3 driver's per-thread default would raise.
+_conn = sqlite3.connect(str(CHECKPOINT_DB_PATH), check_same_thread=False)
+memory_checkpointer = SqliteSaver(_conn, serde=_serde)
+memory_checkpointer.setup()
+# SqliteSaver.setup() flips the DB to WAL mode. The .db-shm memory-mapped file
+# WAL uses is flaky on some virtualised / bind-mounted filesystems (we've seen
+# SIGBUS on concurrent access). Rollback journal ("DELETE" mode) is safer for
+# single-process Streamlit and still correct.
+_conn.execute("PRAGMA journal_mode=DELETE")
+_conn.commit()
 
 
 # ---------------------------------------------------------------------------
