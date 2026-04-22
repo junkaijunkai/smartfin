@@ -6,8 +6,6 @@ from typing import Any, Dict
 
 from langchain_core.messages import AIMessage
 
-from langchain_core.messages import AIMessage
-
 from app.agents.budget_planning.extractor import extract_budget_request
 from app.agents.budget_planning.planner import (
     calculate_monthly_spending,
@@ -16,6 +14,7 @@ from app.agents.budget_planning.planner import (
     generate_budget_warnings,
 )
 from app.state import BudgetAllocation, TransactionCategory
+from app.guardrails.output_validator import validate_budget_output
 
 
 def _build_ai_message(
@@ -64,6 +63,16 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["budget_summary"] = "More information is needed before generating a budget plan."
         state["budget_warnings"] = []
         state["budget_progress"] = {}
+        state["output_validation_result"] = {
+            "valid": True,
+            "errors": [],
+            "sanitized_output": None,
+        }
+        state["security_events"] = [{
+            "source": "budget_planning",
+            "event_type": "clarification_required",
+            "reason": "monthly_income_missing",
+        }]
         state["pending_confirmation"] = {
             "action": "clarify_budget_planning",
             "agent": "budget_planning",
@@ -172,11 +181,35 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     ai_message = _build_ai_message(allocation_list, warnings, progress, monthly_income)
 
+    candidate_output = {
+        "budget_allocations": allocation_list,
+        "budget_progress": progress,
+        "budget_warnings": warnings,
+        "budget_summary": summary,
+        "budget_request": extracted,
+    }
+
+    validation_result = validate_budget_output(candidate_output)
+
+    if not validation_result["valid"]:
+        state["budget_summary"] = "Budget planning failed output validation."
+        state["budget_warnings"] = []
+        state["budget_progress"] = {}
+        state["budget_request"] = extracted
+        state["output_validation_result"] = validation_result
+        state["security_events"] = [{
+            "source": "budget_planning",
+            "event_type": "output_validation_failed",
+            "errors": validation_result["errors"],
+        }]
+        return state
+
     state["budget_allocations"] = allocation_list
     state["budget_progress"] = progress
     state["budget_warnings"] = warnings
     state["budget_summary"] = summary
     state["budget_request"] = extracted
+    state["output_validation_result"] = validation_result
     state["messages"] = [AIMessage(content=ai_message)]
 
     return state

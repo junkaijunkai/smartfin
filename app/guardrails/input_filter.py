@@ -2,36 +2,47 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any, Dict
 
 
-_RULE_PATTERNS: dict[str, tuple[re.Pattern[str], str]] = {
-    "prompt_injection": (
-        re.compile(
-            r"ignore (all|any|the)? ?(previous|prior|above) instructions|"
-            r"disregard (all|the) instructions|"
-            r"bypass (the )?(guardrails|safety)|"
-            r"jailbreak",
-            re.IGNORECASE,
-        ),
-        "The request appears to contain prompt-injection instructions.",
-    ),
-    "system_prompt_exfiltration": (
-        re.compile(
-            r"reveal .*system prompt|show .*developer message|print .*hidden prompt|"
-            r"leak .*instruction|display .*internal prompt",
-            re.IGNORECASE,
-        ),
-        "The request asks for hidden prompts or internal instructions.",
-    ),
-    "secret_exfiltration": (
-        re.compile(
-            r"print .*api key|reveal .*api key|show .*token|dump .*secret|"
-            r"exfiltrat(e|ion).*secret|return .*credential",
-            re.IGNORECASE,
-        ),
-        "The request appears to seek secrets or credentials.",
-    ),
-}
+INJECTION_PATTERNS = [
+    r"ignore (all|any|the)? ?(previous|prior|above|earlier) instructions",
+    r"disregard (all|the|previous|earlier) instructions",
+    r"you are now",
+    r"system prompt",
+    r"developer message",
+    r"reveal .* prompt",
+    r"show .* hidden",
+    r"bypass (the )?(guardrails|safety)?",
+    r"jailbreak",
+    r"act as .* instead",
+    r"print .*api key",
+    r"reveal .*api key",
+    r"show .*token",
+    r"dump .*secret",
+    r"return .*credential",
+]
+
+FINANCE_KEYWORDS = [
+    "budget",
+    "expense",
+    "expenses",
+    "spending",
+    "transaction",
+    "transactions",
+    "goal",
+    "saving",
+    "savings",
+    "deposit",
+    "fund",
+    "income",
+    "risk",
+    "health",
+    "anomaly",
+    "suspicious",
+    "finance",
+    "finances",
+]
 
 
 @dataclass(frozen=True)
@@ -43,25 +54,35 @@ class InputGuardrailResult:
 
 
 def _normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _contains_injection_attempt(message: str) -> list[str]:
+    hits: list[str] = []
+    lower_msg = message.lower()
+
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, lower_msg):
+            hits.append(pattern)
+
+    return hits
+
+
+def _is_finance_related(message: str) -> bool:
+    lower_msg = message.lower()
+    return any(keyword in lower_msg for keyword in FINANCE_KEYWORDS)
 
 
 def scan_input(text: str) -> InputGuardrailResult:
     normalized = _normalize(text)
-    matched_rules: list[str] = []
-    reasons: list[str] = []
-
-    for rule_name, (pattern, reason) in _RULE_PATTERNS.items():
-        if pattern.search(normalized):
-            matched_rules.append(rule_name)
-            reasons.append(reason)
+    matched_rules = _contains_injection_attempt(normalized)
 
     if matched_rules:
         return InputGuardrailResult(
             allowed=False,
             sanitized_text=normalized,
             matched_rules=tuple(matched_rules),
-            reason=" ".join(reasons),
+            reason="Potential prompt injection or sensitive instruction detected.",
         )
 
     return InputGuardrailResult(
@@ -70,3 +91,53 @@ def scan_input(text: str) -> InputGuardrailResult:
         matched_rules=(),
         reason="",
     )
+
+
+def filter_user_input(message: str) -> Dict[str, Any]:
+    """
+    Lightweight input guardrail for SmartFin.
+
+    Returns:
+    {
+        "allowed": bool,
+        "sanitized_message": str,
+        "risk_level": "low" | "medium" | "high",
+        "reasons": list[str],
+        "is_finance_related": bool,
+    }
+    """
+    stripped = _normalize(message)
+
+    reasons: list[str] = []
+    risk_level = "low"
+    allowed = True
+
+    if not stripped:
+        return {
+            "allowed": False,
+            "sanitized_message": "",
+            "risk_level": "medium",
+            "reasons": ["empty_input"],
+            "is_finance_related": False,
+        }
+
+    guardrail_result = scan_input(stripped)
+    if not guardrail_result.allowed:
+        allowed = False
+        risk_level = "high"
+        reasons.append("potential_prompt_injection")
+        reasons.extend([f"matched:{hit}" for hit in guardrail_result.matched_rules])
+
+    finance_related = _is_finance_related(stripped)
+    if not finance_related:
+        reasons.append("out_of_scope_or_non_finance")
+
+    sanitized_message = stripped[:2000]
+
+    return {
+        "allowed": allowed,
+        "sanitized_message": sanitized_message,
+        "risk_level": risk_level,
+        "reasons": reasons,
+        "is_finance_related": finance_related,
+    }

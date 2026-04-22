@@ -172,3 +172,8 @@ class AppState(TypedDict):
     pending_confirmation: dict | None  # HITL(Human In The Loop): payload awaiting user confirmation
     active_agent: str | None
     agents_queue: list[str] # 记录agent执行队列，从顶部移出，从尾部添加，等队列为空时才END
+    
+    # --- Guardrails / observability ---
+    input_filter_result: dict | None
+    output_validation_result: dict | None
+    security_events: list[dict]

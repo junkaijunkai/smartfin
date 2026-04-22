@@ -11,10 +11,11 @@ Each specialist agent node is a STUB here (returns state unchanged).
 Replace the stub functions with real imports as each agent is implemented.
 """
 
+from __future__ import annotations
+
 from langgraph.graph import END, StateGraph
 from langchain_core.runnables import RunnableConfig
 
-from app.guardrails.input_filter import scan_input
 from app.state import AppState
 from app.orchestrator.checkpoints import memory_checkpointer
 from app.orchestrator.intent_classifier import classify_intent
@@ -30,6 +31,7 @@ from app.orchestrator.router import (
     route_to_agent,
 )
 from app.tools.transaction_store import load_analysis
+from app.guardrails.input_filter import filter_user_input, scan_input
 
 
 # ---------------------------------------------------------------------------
@@ -83,31 +85,64 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
     if state.get("active_agent") not in (None, "end"):
         return {"active_agent": "end", "agents_queue": []}
 
-    # --- Fresh routing: classify user intent using LLM ---
     messages = state.get("messages", [])
     last_message = messages[-1].content if messages else ""
 
-    input_guardrail = scan_input(last_message)
-    if not input_guardrail.allowed:
+    filter_result = filter_user_input(last_message)
+
+    # Block clear prompt-injection attempts
+    if not filter_result["allowed"]:
         from langchain_core.messages import AIMessage
         return {
             "active_agent": "end",
             "agents_queue": [],
+            "input_filter_result": filter_result,
+            "security_events": [{
+                "source": "input_filter",
+                "event_type": "blocked_input",
+                "risk_level": filter_result["risk_level"],
+                "reasons": filter_result["reasons"],
+                "message_preview": last_message[:120] if last_message else "",
+            }],
             "messages": [AIMessage(content=(
-                "I can't help with requests to reveal hidden instructions, secrets, or bypass safety controls. "
-                "Please ask a personal-finance question such as budgeting, spending analysis, savings goals, anomalies, or financial health."
+                "Your request was blocked because it appears to contain unsafe or "
+                "irrelevant instructions. Please submit a normal personal finance query."
             ))],
-            "alerts": state.get("alerts", []),
         }
 
+    # Reject clearly out-of-scope requests
+    if not filter_result["is_finance_related"]:
+        from langchain_core.messages import AIMessage
+        return {
+            "active_agent": "end",
+            "agents_queue": [],
+            "input_filter_result": filter_result,
+            "security_events": [{
+                "source": "input_filter",
+                "event_type": "out_of_scope_input",
+                "risk_level": filter_result["risk_level"],
+                "reasons": filter_result["reasons"],
+                "message_preview": last_message[:120] if last_message else "",
+            }],
+            "messages": [AIMessage(content=(
+                "I'm SmartFin, a personal finance assistant. "
+                "Please ask about budgeting, expenses, savings goals, anomalies, or financial health."
+            ))],
+        }
+
+    safe_message = filter_result["sanitized_message"]
+
     # Use LLM to classify intent; falls back to keyword matching on error
-    agent_name = classify_intent(last_message)
+    agent_name = classify_intent(safe_message)
+    # Use LLM to classify intent; falls back to keyword matching on error
+    agent_name = classify_intent(safe_message)
 
     if agent_name == "unknown":
         from langchain_core.messages import AIMessage
         return {
             "active_agent": "end",
             "agents_queue": [],
+            "input_filter_result": filter_result,
             "messages": [AIMessage(content=(
                 "I'm SmartFin, your personal finance AI assistant. "
                 "I can only help you with:\n"
@@ -174,7 +209,11 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
             }
 
     active_agent = planned.pop(0)
-    result = {"active_agent": active_agent, "agents_queue": planned}
+    result = {
+        "active_agent": active_agent,
+        "agents_queue": planned,
+        "input_filter_result": filter_result,
+    }
     result.update(cache_update)
     return result
 
