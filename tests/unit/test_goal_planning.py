@@ -209,13 +209,14 @@ def test_extract_goal_from_message_llm_success(monkeypatch):
     )
 
     class FakeStructuredLLM:
-        def invoke(self, prompt: str):
-            # 简单校验 prompt 是否正确生成
-            assert "I want to save 8000" in prompt
+        def invoke(self, messages):
+            # messages is a list of SystemMessage/HumanMessage objects
+            combined = " ".join(str(getattr(m, "content", m)) for m in messages)
+            assert "I want to save 8000" in combined
             return expected_result
 
     class FakeChatAnthropic:
-        def __init__(self, model: str):
+        def __init__(self, model: str, **kwargs):
             # 检查模型名参数是否被正确传入
             assert isinstance(model, str)
 
@@ -378,7 +379,7 @@ def test_goal_planning_agent_updates_goal_fields(monkeypatch):
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=False,
                 missing_fields=[],
@@ -428,7 +429,7 @@ def test_goal_planning_agent_sets_pending_confirmation(monkeypatch):
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=False,
                 missing_fields=[],
@@ -476,7 +477,7 @@ def test_goal_planning_agent_marks_goal_behind_schedule_when_surplus_not_enough(
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=False,
                 missing_fields=[],
@@ -522,7 +523,7 @@ def test_goal_planning_agent_returns_clarification_when_required_fields_missing(
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=True,
                 name="Laptop Fund",
@@ -561,7 +562,7 @@ def test_goal_planning_agent_creates_new_goal_when_extraction_is_complete(monkey
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=True,
                 name="Laptop Fund",
@@ -614,7 +615,7 @@ def test_goal_planning_agent_uses_fallback_confidence_for_non_goal_intent(monkey
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=False,
                 missing_fields=[],
@@ -950,7 +951,7 @@ def test_goal_planning_agent_handles_validation_failure_gracefully(monkeypatch):
     monkeypatch.setattr(
         goal_agent_module,
         "extract_goal_from_message",
-        lambda _: (
+        lambda _, **kwargs: (
             GoalExtractionResult(
                 is_goal_intent=True,
                 name="Laptop Fund",
