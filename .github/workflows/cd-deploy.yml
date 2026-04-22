@@ -1,33 +1,17 @@
 name: CD Deploy
 
 on:
-  workflow_run:
-    workflows:
-      - CI LLMSecOps
-    types:
-      - completed
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: smartfin-deploy-${{ github.event.workflow_run.head_branch || github.ref_name }}
+  group: smartfin-deploy-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   deploy:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        (
-          github.event.workflow_run.head_branch == 'main' ||
-          github.event.workflow_run.head_branch == 'master' ||
-          github.event.workflow_run.head_branch == 'dev'
-        )
-      )
     runs-on: ubuntu-latest
     env:
       DEPLOY_PATH: /opt/smartfin
@@ -36,8 +20,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Prepare remote deployment directory
         uses: appleboy/ssh-action@v1.2.0
