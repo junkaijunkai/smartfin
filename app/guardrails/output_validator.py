@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-<<<<<<< HEAD
 import re
 from dataclasses import dataclass
+from typing import Any, Dict, List
+
+from app.state import BudgetAllocation
 
 
 _OUTPUT_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -21,7 +23,13 @@ class OutputValidationResult:
 
 
 def validate_output(text: str) -> OutputValidationResult:
-    sanitized = text
+    """
+    Generic text-output guardrail.
+
+    Detects sensitive tokens / secrets / card-like numbers in text output
+    and returns a redacted version if needed.
+    """
+    sanitized = text or ""
     matched_rules: list[str] = []
 
     for rule_name, pattern in _OUTPUT_PATTERNS.items():
@@ -34,10 +42,6 @@ def validate_output(text: str) -> OutputValidationResult:
         sanitized_text=sanitized,
         matched_rules=tuple(matched_rules),
     )
-=======
-from typing import Any, Dict, List
-
-from app.state import BudgetAllocation
 
 
 def validate_budget_output(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -95,6 +99,10 @@ def validate_budget_output(result: Dict[str, Any]) -> Dict[str, Any]:
         errors.append("missing_budget_summary")
     elif not isinstance(budget_summary, str):
         errors.append("budget_summary_must_be_str")
+    else:
+        summary_check = validate_output(budget_summary)
+        if not summary_check.allowed:
+            errors.append("budget_summary_contains_sensitive_output")
 
     if budget_request is None:
         errors.append("missing_budget_request")
@@ -106,4 +114,3 @@ def validate_budget_output(result: Dict[str, Any]) -> Dict[str, Any]:
         "errors": errors,
         "sanitized_output": result if len(errors) == 0 else None,
     }
->>>>>>> df41abc (feat(ai-security): add guardrails and promptfoo security/routing evals)
