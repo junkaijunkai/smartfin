@@ -21,6 +21,7 @@ from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel
 
 from app.agents.anomaly_detection.detector import detect_anomalies
+from app.config import resolve_model_name
 from app.state import AnomalyFlag, Transaction
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def _generate_explanations(
         "Flagged transactions:\n" + "---\n".join(lines)
     )
 
-    model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
+    model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
 
     try:
         llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)

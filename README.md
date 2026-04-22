@@ -101,6 +101,12 @@ cp .env.example .env
 streamlit run ui/app.py
 ```
 
+### Run the Backend API
+
+```bash
+uvicorn app.api:app --host 0.0.0.0 --port 8000
+```
+
 ### Run Tests
 
 ```bash
@@ -113,6 +119,25 @@ pytest tests/ -v
 # With coverage
 pytest tests/ --cov=app --cov-report=term-missing
 ```
+
+### Run LLMSecOps Checks
+
+```bash
+python scripts/llmsecops_ci.py
+```
+
+For the CI-oriented LLMSecOps design, see `docs/llmsecops_pipeline.md`.
+
+### Run with Docker
+
+```bash
+docker compose up --build
+```
+
+Services:
+
+- frontend: `http://localhost:8501`
+- backend: `http://localhost:8000`
 
 ---
 
@@ -157,7 +182,10 @@ finance-agent-app/
 | `LANGCHAIN_API_KEY` | Optional | LangSmith tracing |
 | `LANGCHAIN_TRACING_V2` | Optional | Enable LangSmith (`true`) |
 | `LANGCHAIN_PROJECT` | Optional | LangSmith project name (`smartfin`) |
-| `SMARTFIN_MODEL` | Optional | Claude model ID (default: `claude-sonnet-4-6`) |
+| `SMARTFIN_MODEL` | Optional | Claude model ID or approved alias (default: `claude-haiku-4-5`) |
+| `SMARTFIN_ENFORCE_APPROVED_MODELS` | Optional | When `true`, unapproved model IDs fall back to the registry default |
+| `SMARTFIN_LOG_FORMAT` | Optional | `plain` or `json` logging output |
+| `SMARTFIN_BACKEND_URL` | Optional | Frontend-to-backend base URL for the Streamlit container/UI |
 
 ---
 

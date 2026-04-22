@@ -38,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 
+from app.config import resolve_model_name
 from app.state import (
     Alert,
     AlertSeverity,
@@ -342,7 +343,7 @@ def _generate_advisory(
     the LLM is unavailable — the caller falls back to _build_observations().
     """
     try:
-        model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
+        model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
         llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
         structured_llm = llm.with_structured_output(_AdvisoryResult)
     except Exception as exc:

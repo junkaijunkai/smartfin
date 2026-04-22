@@ -14,6 +14,7 @@ Replace the stub functions with real imports as each agent is implemented.
 from langgraph.graph import END, StateGraph
 from langchain_core.runnables import RunnableConfig
 
+from app.guardrails.input_filter import scan_input
 from app.state import AppState
 from app.orchestrator.checkpoints import memory_checkpointer
 from app.orchestrator.intent_classifier import classify_intent
@@ -85,6 +86,19 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
     # --- Fresh routing: classify user intent using LLM ---
     messages = state.get("messages", [])
     last_message = messages[-1].content if messages else ""
+
+    input_guardrail = scan_input(last_message)
+    if not input_guardrail.allowed:
+        from langchain_core.messages import AIMessage
+        return {
+            "active_agent": "end",
+            "agents_queue": [],
+            "messages": [AIMessage(content=(
+                "I can't help with requests to reveal hidden instructions, secrets, or bypass safety controls. "
+                "Please ask a personal-finance question such as budgeting, spending analysis, savings goals, anomalies, or financial health."
+            ))],
+            "alerts": state.get("alerts", []),
+        }
 
     # Use LLM to classify intent; falls back to keyword matching on error
     agent_name = classify_intent(last_message)

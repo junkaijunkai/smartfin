@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-smartfin}
+      SMARTFIN_MODEL: ${SMARTFIN_MODEL:-claude-haiku-4-5}
+      SMARTFIN_ENFORCE_APPROVED_MODELS: ${SMARTFIN_ENFORCE_APPROVED_MODELS:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SMARTFIN_LOG_FORMAT: ${SMARTFIN_LOG_FORMAT:-plain}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    environment:
+      SMARTFIN_BACKEND_URL: http://backend:8000

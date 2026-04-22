@@ -1,0 +1,56 @@
+name: CI LLMSecOps
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+  pull_request:
+
+jobs:
+  quality-security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff bandit pip-audit
+
+      - name: Ruff
+        run: ruff check app/config.py app/api.py app/guardrails ui/app.py tests/security tests/unit/test_config.py scripts/llmsecops_ci.py
+
+      - name: Unit tests
+        run: python -m pytest tests/unit -v
+
+      - name: Integration tests
+        run: python -m pytest tests/integration -v
+
+      - name: Security tests
+        run: python -m pytest tests/security -v
+
+      - name: LLMSecOps policy checks
+        run: python scripts/llmsecops_ci.py
+
+      - name: Static security scan
+        run: bandit -q -r app scripts
+
+      - name: Dependency vulnerability scan
+        run: pip-audit -r requirements.txt
+
+      - name: Build backend Docker image
+        run: docker build -f Dockerfile.backend -t smartfin-backend:ci .
+
+      - name: Build frontend Docker image
+        run: docker build -f Dockerfile.frontend -t smartfin-frontend:ci .

@@ -35,7 +35,7 @@ Fast, isolated tests for individual agent logic and utilities. No external API c
 
 ### Integration Tests
 ```bash
-pytest tests/integration/test_agent_pipeline.py -v
+python -m pytest tests/integration/test_agent_pipeline.py -v
 ```
 
 Smoke tests verifying the orchestrator graph compiles, routes correctly, and completes without errors. Tests run against stub agent implementations, no real LLM calls.
@@ -48,14 +48,21 @@ Smoke tests verifying the orchestrator graph compiles, routes correctly, and com
 
 ### Security Tests
 ```bash
-pytest tests/security/ -v
+python -m pytest tests/security/ -v
 ```
 
 Guardrails and safety validation (e.g., prompt injection, data leakage).
 
+### LLMSecOps Policy Checks
+```bash
+python scripts/llmsecops_ci.py
+```
+
+Runs deterministic CI policy checks for approved model registry usage, prompt injection blocking, and sensitive output redaction.
+
 ### Single Test
 ```bash
-pytest tests/integration/test_agent_pipeline.py::test_graph_compiles -v
+python -m pytest tests/integration/test_agent_pipeline.py::test_graph_compiles -v
 ```
 
 Run a specific test by name.
@@ -65,7 +72,7 @@ Run a specific test by name.
 Coverage is automatically collected for the `app/` module (see `pyproject.toml`). View the report after running tests:
 
 ```bash
-pytest tests/ --cov=app --cov-report=html
+python -m pytest tests/ --cov=app --cov-report=html
 open htmlcov/index.html  # macOS
 ```
 
