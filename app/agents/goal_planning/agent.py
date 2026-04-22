@@ -16,6 +16,7 @@ Design principle:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import date
 from uuid import uuid4
@@ -194,7 +195,11 @@ def run(state: AppState) -> dict:
     latest_message = _get_latest_message_text(state)
     current_date_str = state.get("current_date")
     today = date.fromisoformat(current_date_str) if current_date_str else date.today()
-    extraction, llm_succeeded = extract_goal_from_message(latest_message, today=today)
+    extract_signature = inspect.signature(extract_goal_from_message)
+    if "today" in extract_signature.parameters:
+        extraction, llm_succeeded = extract_goal_from_message(latest_message, today=today)
+    else:
+        extraction, llm_succeeded = extract_goal_from_message(latest_message)
 
     # ------------------------------------------------------------------
     # Step 3: If user is expressing a new goal, handle creation logic

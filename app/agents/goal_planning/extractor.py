@@ -10,6 +10,7 @@ Design principle:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import re
@@ -18,7 +19,6 @@ from datetime import date
 from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from app.config import resolve_model_name
 
@@ -257,26 +257,27 @@ def extract_goal_from_message(
     model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
 
     try:
-        llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
+        chat_signature = inspect.signature(ChatAnthropic)
+        if "timeout" in chat_signature.parameters:
+            llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
+        else:
+            llm = ChatAnthropic(model=model_name)
         structured_llm = llm.with_structured_output(GoalExtractionResult)
     except Exception as exc:
         logger.warning("Failed to initialise LLM for goal extraction: %s", exc)
         return _fallback_extract(user_message), False
 
-    system_msg = SystemMessage(
-        content=(
-            f"Today's date is {today.isoformat()}. "
-            "When the user mentions a date without a year, "
-            "always infer the nearest future date relative to today. "
-            "Never resolve an ambiguous date to a date in the past."
-        )
+    prompt = (
+        f"Today's date is {today.isoformat()}. "
+        "When the user mentions a date without a year, always infer the nearest future date relative to today. "
+        "Never resolve an ambiguous date to a date in the past.\n\n"
+        f"{_build_prompt(user_message)}"
     )
-    human_msg = HumanMessage(content=_build_prompt(user_message))
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result: GoalExtractionResult = structured_llm.invoke([system_msg, human_msg])
+            result: GoalExtractionResult = structured_llm.invoke(prompt)
             return result, True
         except Exception as exc:
             last_exc = exc

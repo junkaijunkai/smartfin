@@ -55,7 +55,7 @@ def _keyword_fallback(message: str) -> str:
     elif any(kw in msg for kw in ["spend", "spending", "expense", "transaction", "categor"]):
         return "expense_analysis"
 
-    return "unknown"
+    return "expense_analysis"
 
 
 def _build_prompt(message: str) -> str:
