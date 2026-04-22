@@ -20,13 +20,34 @@ Two distinct concepts live here:
 """
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 # ---------------------------------------------------------------------------
 # Checkpointer instance
 # ---------------------------------------------------------------------------
 # A single shared instance is fine for in-process use.
 # Import this wherever you need to compile or resume the graph.
-memory_checkpointer = MemorySaver()
+
+# Register all Pydantic state models so LangGraph's JsonPlusSerializer doesn't
+# emit a WARNING for each object when deserializing checkpointed state.
+_STATE_MODULE = "app.state"
+_serde = JsonPlusSerializer(
+    allowed_msgpack_modules=[
+        (_STATE_MODULE, "Transaction"),
+        (_STATE_MODULE, "BudgetAllocation"),
+        (_STATE_MODULE, "FinancialGoal"),
+        (_STATE_MODULE, "AnomalyFlag"),
+        (_STATE_MODULE, "SpendingTrend"),
+        (_STATE_MODULE, "HealthSummary"),
+        (_STATE_MODULE, "Alert"),
+        (_STATE_MODULE, "TransactionCategory"),
+        (_STATE_MODULE, "AnomalyType"),
+        (_STATE_MODULE, "HealthRating"),
+        (_STATE_MODULE, "AlertSeverity"),
+    ]
+)
+
+memory_checkpointer = MemorySaver(serde=_serde)
 
 
 # ---------------------------------------------------------------------------

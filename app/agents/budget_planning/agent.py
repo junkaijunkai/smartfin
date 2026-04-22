@@ -4,6 +4,10 @@ import calendar
 from datetime import date, datetime
 from typing import Any, Dict
 
+from langchain_core.messages import AIMessage
+
+from langchain_core.messages import AIMessage
+
 from app.agents.budget_planning.extractor import extract_budget_request
 from app.agents.budget_planning.planner import (
     calculate_monthly_spending,
@@ -13,6 +17,36 @@ from app.agents.budget_planning.planner import (
 )
 from app.state import BudgetAllocation, TransactionCategory
 
+
+def _build_ai_message(
+    allocation_list: list,
+    warnings: list,
+    progress: dict,
+    monthly_income: float,
+) -> str:
+    lines = [f"Here's your budget plan based on a monthly income of £{monthly_income:.2f}:\n"]
+
+    if allocation_list:
+        lines.append("Budget allocations:")
+        for alloc in sorted(allocation_list, key=lambda a: a.allocated_amount, reverse=True):
+            status = progress.get(alloc.category.value, {}).get("status", "on_track")
+            status_icon = {"exceeded": "❌", "near_limit": "⚠", "on_track": "✓"}.get(status, "")
+            lines.append(
+                f"  {status_icon} {alloc.category.value.capitalize():<15} "
+                f"£{alloc.allocated_amount:>7.2f} budget  |  "
+                f"£{alloc.spent_amount:>7.2f} spent  |  "
+                f"£{alloc.remaining:>7.2f} remaining"
+            )
+
+    if warnings:
+        lines.append("\nWarnings:")
+        for w in warnings:
+            severity_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(w.get("severity", ""), "•")
+            lines.append(f"  {severity_icon} {w.get('message', '')}")
+    else:
+        lines.append("\nAll categories are within budget. Keep it up!")
+
+    return "\n".join(lines)
 
 def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -136,10 +170,13 @@ def budget_planning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         f"{warning_count} warning(s) generated."
     )
 
+    ai_message = _build_ai_message(allocation_list, warnings, progress, monthly_income)
+
     state["budget_allocations"] = allocation_list
     state["budget_progress"] = progress
     state["budget_warnings"] = warnings
     state["budget_summary"] = summary
     state["budget_request"] = extracted
+    state["messages"] = [AIMessage(content=ai_message)]
 
     return state

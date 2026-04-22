@@ -77,6 +77,7 @@ _SAVINGS_CATEGORY = TransactionCategory.SAVINGS
 
 MAX_RETRIES = 3
 _INITIAL_BACKOFF = 2.0  # seconds; doubles on each subsequent retry
+_LLM_TIMEOUT = 30       # seconds
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,7 @@ def _generate_advisory(
     """
     try:
         model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
-        llm = ChatAnthropic(model=model_name)
+        llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
         structured_llm = llm.with_structured_output(_AdvisoryResult)
     except Exception as exc:
         logger.warning("Failed to initialise LLM for health advisory: %s", exc)

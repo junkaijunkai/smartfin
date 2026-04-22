@@ -12,8 +12,28 @@ Writes:
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage
+
 from app.agents.health_assessment.assessor import assess_health
 from app.state import AppState
+
+
+def _build_ai_message(health_summary) -> str:
+    rating = health_summary.rating.value.upper()
+    lines = [
+        f"Financial Health Assessment — Overall Rating: {rating}\n",
+        f"• Debt-to-income ratio: {health_summary.debt_to_income_ratio:.0%}",
+        f"• Liquid reserves: {health_summary.liquid_reserve_months:.1f} months",
+    ]
+    if health_summary.income_concentration_risk:
+        lines.append("• ⚠ Income concentration risk detected")
+    if health_summary.sustained_overspending:
+        lines.append("• ⚠ Sustained overspending detected")
+    if health_summary.observations:
+        lines.append("\nAdvisory:")
+        for obs in health_summary.observations:
+            lines.append(f"  {obs}")
+    return "\n".join(lines)
 
 
 def run(state: AppState) -> dict:
@@ -49,4 +69,5 @@ def run(state: AppState) -> dict:
     return {
         "health_summary": health_summary,
         "alerts": merged_alerts,
+        "messages": [AIMessage(content=_build_ai_message(health_summary))],
     }

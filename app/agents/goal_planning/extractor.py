@@ -13,13 +13,19 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import date
 from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+_INITIAL_BACKOFF = 2.0  # seconds; doubles on each subsequent retry
+_LLM_TIMEOUT = 30       # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +111,15 @@ Rules:
 5. If current saved amount is not mentioned, leave current_amount as null.
 6. Choose a short, natural goal name when possible.
 7. Do NOT calculate monthly savings. Only extract information.
+8. IMPORTANT — Relative and partial date expressions MUST be resolved to a concrete date
+   using today's date from the system message. Do NOT mark target_date as missing simply
+   because the user used a relative expression. Examples:
+   - "end of this month"  → last day of the current month
+   - "by April"           → last day of April of the nearest future year
+   - "next month"         → last day of next month
+   - "by end of year"     → December 31 of the current year
+   - "in 3 months"        → today's date plus 3 months
+   Only mark target_date as missing when the user provides NO date information at all.
 
 User message:
 \"\"\"{user_message}\"\"\"
@@ -208,7 +223,10 @@ def _fallback_extract(user_message: str) -> GoalExtractionResult:
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_goal_from_message(user_message: str) -> tuple[GoalExtractionResult, bool]:
+def extract_goal_from_message(
+    user_message: str,
+    today: date | None = None,
+) -> tuple[GoalExtractionResult, bool]:
     """
     从用户消息中提取结构化的 goal 信息。
 
@@ -221,35 +239,57 @@ def extract_goal_from_message(user_message: str) -> tuple[GoalExtractionResult, 
         False -> LLM 调用失败，退回 fallback
 
     注意：
-    - 空消息不算失败，直接返回一个“非 goal intent”的结果
+    - 空消息不算失败，直接返回一个”非 goal intent”的结果
     - 测试时不要在这里写 mock 逻辑，应该在 pytest 中 patch ChatAnthropic
     """
 
-    # 空输入时，直接返回一个“没有 goal intent”的结果
+    # 空输入时，直接返回一个”没有 goal intent”的结果
     if not user_message.strip():
         return GoalExtractionResult(
             is_goal_intent=False,
             missing_fields=[],
         ), True
 
+    today = today or date.today()
+
     # 允许通过环境变量覆盖模型名，但不再在生产代码里放 mock mode
     model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
 
     try:
-        # 创建 Anthropic chat model
-        llm = ChatAnthropic(model=model_name)
-
-        # 要求模型按 GoalExtractionResult 结构化输出
+        llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
         structured_llm = llm.with_structured_output(GoalExtractionResult)
-
-        # 构造 prompt
-        prompt = _build_prompt(user_message)
-
-        # 调用模型并拿到结构化结果
-        result: GoalExtractionResult = structured_llm.invoke(prompt)
-        return result, True
-
     except Exception as exc:
-        # 一旦 LLM 出错，记录日志并启用 fallback
-        logger.warning("Goal extraction failed, using fallback extractor: %s", exc)
+        logger.warning("Failed to initialise LLM for goal extraction: %s", exc)
         return _fallback_extract(user_message), False
+
+    system_msg = SystemMessage(
+        content=(
+            f"Today's date is {today.isoformat()}. "
+            "When the user mentions a date without a year, "
+            "always infer the nearest future date relative to today. "
+            "Never resolve an ambiguous date to a date in the past."
+        )
+    )
+    human_msg = HumanMessage(content=_build_prompt(user_message))
+    last_exc: Exception | None = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result: GoalExtractionResult = structured_llm.invoke([system_msg, human_msg])
+            return result, True
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                wait = _INITIAL_BACKOFF * (2 ** (attempt - 1))
+                logger.warning(
+                    "Goal extraction failed (attempt %d/%d), retrying in %.0fs: %s",
+                    attempt, MAX_RETRIES, wait, exc,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "Goal extraction failed after %d attempts: %s",
+                    MAX_RETRIES, last_exc,
+                )
+
+    return _fallback_extract(user_message), False

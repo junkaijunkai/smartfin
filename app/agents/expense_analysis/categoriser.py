@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 CHUNK_SIZE = 200        # transactions per LLM call
 _INITIAL_BACKOFF = 2.0  # seconds; doubles on each subsequent retry
+_LLM_TIMEOUT = 30       # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +194,7 @@ def categorise_transactions(
         return [], True
 
     model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
-    llm = ChatAnthropic(model=model_name)
+    llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
     structured_llm = llm.with_structured_output(_CategoryBatch)
 
     chunks = [

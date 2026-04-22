@@ -31,6 +31,7 @@ class _IntentResult(BaseModel):
         "goal_planning",
         "anomaly_detection",
         "health_assessment",
+        "unknown",
     ]
     reasoning: str
 
@@ -53,7 +54,7 @@ def _keyword_fallback(message: str) -> str:
     elif any(kw in msg for kw in ["spend", "spending", "expense", "transaction", "categor"]):
         return "expense_analysis"
 
-    return "expense_analysis"
+    return "unknown"
 
 
 def _build_prompt(message: str) -> str:
@@ -65,7 +66,8 @@ def _build_prompt(message: str) -> str:
         '- "budget_planning": user wants to plan, adjust, or review spending limits/budgets\n'
         '- "goal_planning": user wants to set or track savings goals, deposits, or funds\n'
         '- "anomaly_detection": user wants to find suspicious, unexpected, or unusual transactions\n'
-        '- "health_assessment": user wants a financial health check, risk score, or overall financial picture\n\n'
+        '- "health_assessment": user wants a financial health check, risk score, or overall financial picture\n'
+        '- "unknown": the message is not related to personal finance at all\n\n'
         "Respond with exactly one agent name and a brief one-sentence reasoning.\n\n"
         f"User message: {message}"
     )

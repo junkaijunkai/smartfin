@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 
 from langchain_anthropic import ChatAnthropic
@@ -23,6 +24,10 @@ from app.agents.anomaly_detection.detector import detect_anomalies
 from app.state import AnomalyFlag, Transaction
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+_INITIAL_BACKOFF = 2.0  # seconds; doubles on each subsequent retry
+_LLM_TIMEOUT = 30       # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -114,16 +119,35 @@ def _generate_explanations(
     )
 
     model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
-    llm = ChatAnthropic(model=model_name)
-    structured_llm = llm.with_structured_output(_ExplanationBatch)
 
     try:
-        response: _ExplanationBatch = structured_llm.invoke(prompt)
-        return {r.transaction_id: r.explanation for r in response.results}
+        llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)
+        structured_llm = llm.with_structured_output(_ExplanationBatch)
     except Exception as exc:
-        logger.warning("LLM explanation failed, falling back to statistical reasons: %s", exc)
-        # Fallback: use the statistical explanation from each flag
+        logger.warning("Failed to initialise LLM for anomaly explanation: %s", exc)
         return {f.transaction_id: f.explanation for f in flags}
+
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response: _ExplanationBatch = structured_llm.invoke(prompt)
+            return {r.transaction_id: r.explanation for r in response.results}
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                wait = _INITIAL_BACKOFF * (2 ** (attempt - 1))
+                logger.warning(
+                    "LLM explanation failed (attempt %d/%d), retrying in %.0fs: %s",
+                    attempt, MAX_RETRIES, wait, exc,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "LLM explanation failed after %d attempts: %s",
+                    MAX_RETRIES, last_exc,
+                )
+
+    return {f.transaction_id: f.explanation for f in flags}
 
 
 def _format_output(

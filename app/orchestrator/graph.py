@@ -88,6 +88,24 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
 
     # Use LLM to classify intent; falls back to keyword matching on error
     agent_name = classify_intent(last_message)
+
+    if agent_name == "unknown":
+        from langchain_core.messages import AIMessage
+        return {
+            "active_agent": "end",
+            "agents_queue": [],
+            "messages": [AIMessage(content=(
+                "I'm SmartFin, your personal finance AI assistant. "
+                "I can only help you with:\n"
+                "  • **Expense Analysis** — break down your spending by category and spot trends\n"
+                "  • **Budget Planning** — set and review monthly spending limits\n"
+                "  • **Goal Planning** — create and track savings goals (e.g. emergency fund, holiday)\n"
+                "  • **Anomaly Detection** — flag suspicious or unusual transactions\n"
+                "  • **Financial Health Assessment** — get an overall picture of your financial health\n\n"
+                "Please rephrase your request to fit one of these categories, and I'll do my best to assist you!"
+            ))],
+        }
+
     worker_agents = [agent_name]
 
     # --- Data availability check ---

@@ -9,6 +9,8 @@ diagnostic/read-only.
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage
+
 from app.agents.anomaly_detection.extractor import extract_and_detect
 from app.state import AppState
 
@@ -37,4 +39,5 @@ def run(state: AppState) -> dict:
     return {
         "anomaly_flags": anomaly_flags,
         "anomaly_explanation": anomaly_explanation,
+        "messages": [AIMessage(content=anomaly_explanation)],
     }
