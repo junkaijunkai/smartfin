@@ -18,6 +18,7 @@ from typing import Literal
 
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel
+from app.config import resolve_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def classify_intent(message: str) -> str:
     always succeeds even if the API is unavailable.
     """
     try:
-        model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
+        model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
         llm = ChatAnthropic(model=model_name)
         structured_llm = llm.with_structured_output(_IntentResult)
 

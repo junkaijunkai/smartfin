@@ -20,6 +20,7 @@ from typing import Optional
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
+from app.config import resolve_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +254,7 @@ def extract_goal_from_message(
     today = today or date.today()
 
     # 允许通过环境变量覆盖模型名，但不再在生产代码里放 mock mode
-    model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
+    model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
 
     try:
         llm = ChatAnthropic(model=model_name, timeout=_LLM_TIMEOUT)

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from langchain_anthropic import ChatAnthropic
+from app.config import resolve_model_name
 from app.state import TransactionCategory
 
 
@@ -44,7 +45,7 @@ def extract_budget_request(state: Dict[str, Any]) -> Dict[str, Any]:
     # fallback income from state
     state_income = state.get("monthly_income")
 
-    model_name = os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5")
+    model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
 
     try:
         llm = ChatAnthropic(model=model_name, temperature=0, timeout=_LLM_TIMEOUT)
