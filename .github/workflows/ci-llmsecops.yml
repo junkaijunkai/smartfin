@@ -11,6 +11,8 @@ on:
 jobs:
   quality-security:
     runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: '1'
 
     steps:
       - name: Checkout

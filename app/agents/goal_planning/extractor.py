@@ -18,6 +18,7 @@ import time
 from datetime import date
 from typing import Optional
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 from app.config import resolve_model_name
@@ -267,17 +268,19 @@ def extract_goal_from_message(
         logger.warning("Failed to initialise LLM for goal extraction: %s", exc)
         return _fallback_extract(user_message), False
 
-    prompt = (
-        f"Today's date is {today.isoformat()}. "
-        "When the user mentions a date without a year, always infer the nearest future date relative to today. "
-        "Never resolve an ambiguous date to a date in the past.\n\n"
-        f"{_build_prompt(user_message)}"
-    )
+    llm_messages = [
+        SystemMessage(content=(
+            f"Today's date is {today.isoformat()}. "
+            "When the user mentions a date without a year, always infer the nearest future date relative to today. "
+            "Never resolve an ambiguous date to a date in the past."
+        )),
+        HumanMessage(content=_build_prompt(user_message)),
+    ]
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result: GoalExtractionResult = structured_llm.invoke(prompt)
+            result: GoalExtractionResult = structured_llm.invoke(llm_messages)
             return result, True
         except Exception as exc:
             last_exc = exc
