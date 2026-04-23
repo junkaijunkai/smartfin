@@ -117,6 +117,51 @@ def _extract_relative_date(msg_lower: str, today: date) -> Optional[date]:
     return None
 
 
+def _derive_goal_name(msg: str, is_goal_intent: bool) -> Optional[str]:
+    if "laptop" in msg:
+        return "Laptop Fund"
+    if "emergency" in msg:
+        return "Emergency Fund"
+    if "travel" in msg or "holiday" in msg:
+        return "Travel Fund"
+    if "house" in msg or "deposit" in msg:
+        return "House Deposit Fund"
+    if is_goal_intent:
+        return "Financial Goal"
+    return None
+
+
+def _goal_name_slug(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    normalized = re.sub(r"\b(fund|goal|savings|saving)\b", "", value.lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _normalize_extraction(result: GoalExtractionResult, user_message: str) -> GoalExtractionResult:
+    msg = user_message.lower()
+    canonical_name = _derive_goal_name(msg, result.is_goal_intent)
+    name = result.name
+
+    if not result.is_goal_intent:
+        name = None
+        missing_fields: list[str] = []
+    else:
+        if canonical_name:
+            name_slug = _goal_name_slug(name)
+            canonical_slug = _goal_name_slug(canonical_name)
+            if not name_slug or name_slug == canonical_slug or name_slug == "financial":
+                name = canonical_name
+
+        missing_fields = list(dict.fromkeys(result.missing_fields))
+        if result.target_amount is None and "target_amount" not in missing_fields:
+            missing_fields.append("target_amount")
+        if result.target_date is None and "target_date" not in missing_fields:
+            missing_fields.append("target_date")
+
+    return result.model_copy(update={"name": name, "missing_fields": missing_fields})
+
+
 def _fallback_extract(user_message: str, today: Optional[date] = None) -> GoalExtractionResult:
     """
     当 LLM 调用失败时使用的轻量级兜底逻辑。
@@ -171,21 +216,8 @@ def _fallback_extract(user_message: str, today: Optional[date] = None) -> GoalEx
         except ValueError:
             extracted_amount = None
 
-    # 根据关键词给一个比较自然的目标名称
-    goal_name: Optional[str] = None
-    if "laptop" in msg:
-        goal_name = "Laptop Fund"
-    elif "emergency" in msg:
-        goal_name = "Emergency Fund"
-    elif "travel" in msg or "holiday" in msg:
-        goal_name = "Travel Fund"
-    elif "house" in msg or "deposit" in msg:
-        goal_name = "House Deposit Fund"
-    elif is_goal_intent:
-        # 如果看起来像 goal intent，但识别不出具体类别
-        goal_name = "Financial Goal"
+    goal_name = _derive_goal_name(msg, is_goal_intent)
 
-    # 如果用户表达了 goal intent，但缺少必要字段，就记录缺失项
     missing_fields: list[str] = []
     if is_goal_intent:
         if extracted_amount is None:
@@ -260,7 +292,7 @@ def extract_goal_from_message(
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result: GoalExtractionResult = structured_llm.invoke(messages)
-            return result, True
+            return _normalize_extraction(result, user_message), True
         except Exception as exc:
             last_exc = exc
             if attempt < MAX_RETRIES:

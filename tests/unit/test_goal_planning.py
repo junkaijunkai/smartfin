@@ -220,6 +220,43 @@ def test_extract_goal_from_message_llm_success(monkeypatch):
     assert result == expected_result
 
 
+def test_extract_goal_from_message_llm_success_normalizes_house_deposit_name(monkeypatch):
+    expected_result = GoalExtractionResult(
+        is_goal_intent=True,
+        name="House Deposit Fund",
+        target_amount=None,
+        target_date=None,
+        current_amount=None,
+        missing_fields=["target_amount", "target_date"],
+    )
+
+    class FakeStructuredLLM:
+        def invoke(self, messages):
+            combined = " ".join(str(getattr(m, "content", m)) for m in messages)
+            assert "house deposit" in combined.lower()
+            return expected_result
+
+    class FakeChatAnthropic:
+        def __init__(self, model: str, **kwargs):
+            assert isinstance(model, str)
+
+        def with_structured_output(self, schema):
+            assert schema is GoalExtractionResult
+            return FakeStructuredLLM()
+
+    monkeypatch.setattr(extractor_module, "ChatAnthropic", FakeChatAnthropic)
+
+    result, llm_succeeded = extract_goal_from_message(
+        "I'd like to start saving for a house deposit."
+    )
+
+    assert llm_succeeded is True
+    assert result.name == "House Deposit Fund"
+    assert result.target_amount is None
+    assert result.target_date is None
+    assert result.missing_fields == ["target_amount", "target_date"]
+
+
 def test_extract_goal_from_message_llm_failure_uses_fallback(monkeypatch):
     """
     测试：当 LLM 调用抛异常时，应自动退回 fallback，
