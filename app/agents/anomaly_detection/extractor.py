@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import defaultdict
 from datetime import datetime
 
 from langchain_anthropic import ChatAnthropic
@@ -96,6 +97,19 @@ def _generate_explanations(
     """
     # Build a lookup for transaction details
     txn_map = {t.id: t for t in transactions}
+    flagged_ids = {f.transaction_id for f in flags}
+
+    # Compute per-category typical (non-outlier) spending range
+    by_cat: dict[str, list[float]] = defaultdict(list)
+    for t in transactions:
+        if t.id not in flagged_ids and t.amount > 0:
+            by_cat[t.category].append(t.amount)
+
+    def _typical_range(category: str) -> str:
+        amounts = by_cat.get(category, [])
+        if not amounts:
+            return "not enough data"
+        return f"£{min(amounts):.2f}–£{max(amounts):.2f} per transaction"
 
     # Build prompt: include user context + flagged transactions + reasons
     lines = []
@@ -108,6 +122,7 @@ def _generate_explanations(
                 f"Amount: £{t.amount:.2f}\n"
                 f"Category: {t.category}\n"
                 f"Date: {t.date.strftime('%Y-%m-%d')}\n"
+                f"Typical spending in this category: {_typical_range(t.category)}\n"
                 f"Statistical reason: {flag.explanation}\n"
             )
 

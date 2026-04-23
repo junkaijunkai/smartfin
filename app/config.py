@@ -59,7 +59,10 @@ def _get_local_prompt(name: str) -> ChatPromptTemplate:
             [
                 (
                     "system",
-                    "Explain flagged financial transactions in plain English using only the supplied statistical reasons.",
+                    "Explain flagged financial transactions in plain English. "
+                    "Use ONLY the supplied statistical reasons and typical spending range. "
+                    "When comparing amounts, base your comparison on the 'Typical spending in this category' figures, NOT on the category average. "
+                    "Do NOT invent or estimate multipliers that are not supported by the provided data.",
                 ),
                 (
                     "human",
