@@ -14,6 +14,21 @@ _DEFAULT_MODEL = "claude-haiku-4-5"
 _MODEL_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "config" / "model_registry.json"
 _EXTRA_LOG_FIELDS = ("agent", "model", "thread_id", "guardrail", "event")
 
+LANGSMITH_PROMPTS: dict[str, str] = {
+    "intent_classifier":        "intent-classifier:v1",
+    "expense_categoriser":      "expense-categoriser:v1",
+    "anomaly_explainer":        "anomaly-explainer:v1",
+    "budget_request_extractor": "budget-request-extractor:v1",
+    "goal_extractor":           "goal-extractor-main:v1",
+    "health_advisory":          "health-advisory:v2",
+}
+
+
+@lru_cache(maxsize=None)
+def get_prompt(name: str):
+    from langsmith import Client
+    return Client().pull_prompt(LANGSMITH_PROMPTS[name])
+
 
 def _is_truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}

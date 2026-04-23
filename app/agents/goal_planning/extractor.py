@@ -10,18 +10,20 @@ Design principle:
 
 from __future__ import annotations
 
+import calendar
 import inspect
 import logging
 import os
 import re
 import time
 from datetime import date
+from dateutil.relativedelta import relativedelta
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
-from app.config import resolve_model_name
+from app.config import resolve_model_name, get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -75,71 +77,47 @@ class GoalExtractionResult(BaseModel):
 # Prompt builder
 # ---------------------------------------------------------------------------
 
-def _build_prompt(user_message: str) -> str:
-    """
-    构造给 LLM 的提示词。
-
-    这里尽量写得明确、结构化，方便模型稳定地产出 GoalExtractionResult。
-    """
-    return f"""
-You are a financial planning assistant for a personal finance AI system.
-
-Your task is to determine whether the user's message expresses a financial savings goal.
-If yes, extract the relevant goal parameters.
-
-Return structured data with these fields:
-- is_goal_intent
-- name
-- target_amount
-- target_date
-- current_amount
-- missing_fields
-
-Rules:
-1. A financial goal includes examples such as:
-   - saving for a laptop
-   - building an emergency fund
-   - saving for a holiday / travel
-   - saving for a house deposit
-2. Required fields for creating a usable goal:
-   - target_amount
-   - target_date
-3. If the user clearly has goal intent but omits one or more required fields:
-   - set is_goal_intent = true
-   - include the missing fields in missing_fields
-4. If the message is not about a financial goal:
-   - set is_goal_intent = false
-   - leave other fields as null or empty
-5. If current saved amount is not mentioned, leave current_amount as null.
-6. Choose a short, natural goal name when possible.
-7. Do NOT calculate monthly savings. Only extract information.
-8. IMPORTANT — Relative and partial date expressions MUST be resolved to a concrete date
-   using today's date from the system message. Do NOT mark target_date as missing simply
-   because the user used a relative expression. Examples:
-   - "end of this month"  → last day of the current month
-   - "by April"           → last day of April of the nearest future year
-   - "next month"         → last day of next month
-   - "by end of year"     → December 31 of the current year
-   - "in 3 months"        → today's date plus 3 months
-   Only mark target_date as missing when the user provides NO date information at all.
-
-User message:
-\"\"\"{user_message}\"\"\"
-""".strip()
 
 
 # ---------------------------------------------------------------------------
 # Fallback extraction
 # ---------------------------------------------------------------------------
 
-# 提取数字金额，例如 8000 / 1200.50
-_AMOUNT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
+# 提取数字金额，支持货币符号前缀和千位逗号，例如 $8,000 / £1,200.50 / 640000
+_CURRENCY_PREFIX = re.compile(r"[$£€¥₹]")
+_AMOUNT_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 
 # 仅支持简单的 YYYY-MM-DD 格式日期
 _DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 
-def _fallback_extract(user_message: str) -> GoalExtractionResult:
+def _extract_relative_date(msg_lower: str, today: date) -> Optional[date]:
+    """Resolve common relative date expressions to a concrete date."""
+    if re.search(r"end of next year|by next year|by the end of next year", msg_lower):
+        return date(today.year + 1, 12, 31)
+    if re.search(r"end of (this )?year|end of year|by year.?s? end|by end of year", msg_lower):
+        return date(today.year, 12, 31)
+    m = re.search(r"in (\d+) months?", msg_lower)
+    if m:
+        target = today + relativedelta(months=int(m.group(1)))
+        return date(target.year, target.month, calendar.monthrange(target.year, target.month)[1])
+    if re.search(r"next month", msg_lower):
+        target = today + relativedelta(months=1)
+        return date(target.year, target.month, calendar.monthrange(target.year, target.month)[1])
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    m = re.search(r"by (" + "|".join(month_names) + r")", msg_lower)
+    if m:
+        month_num = month_names[m.group(1)]
+        year = today.year if month_num > today.month else today.year + 1
+        return date(year, month_num, calendar.monthrange(year, month_num)[1])
+    return None
+
+
+def _fallback_extract(user_message: str, today: Optional[date] = None) -> GoalExtractionResult:
     """
     当 LLM 调用失败时使用的轻量级兜底逻辑。
 
@@ -149,43 +127,47 @@ def _fallback_extract(user_message: str) -> GoalExtractionResult:
     3. 给 agent 提供一个可继续处理的结构化结果
     """
     msg = user_message.lower()
+    today = today or date.today()
 
-    # 一组非常简单的关键词，用于粗粒度判断是否像是“财务目标”
+    # 一组非常简单的关键词，用于粗粒度判断是否像是”财务目标”
     goal_keywords = [
-        "save", "saving", "goal", "fund", "deposit",
-        "emergency", "laptop", "travel", "holiday", "house"
+        "save", "saving", "savings", "goal", "fund", "deposit",
+        "emergency", "laptop", "travel", "holiday", "house",
+        "accumulate", "set aside", "put aside",
     ]
     is_goal_intent = any(keyword in msg for keyword in goal_keywords)
 
     # ------------------------------------------------------------------
-    # 先提取日期
+    # 先提取日期（ISO 格式优先，再尝试相对日期表达）
     # 这样后面提取金额时，可以先把日期字符串从文本里去掉，
     # 避免把 2027-06-01 中的年份 2027 误识别成 target_amount
     # ------------------------------------------------------------------
     extracted_date: Optional[date] = None
-    date_match = _DATE_PATTERN.search(user_message)
     message_without_date = user_message
 
+    date_match = _DATE_PATTERN.search(user_message)
     if date_match:
         try:
             date_str = date_match.group(1)
             extracted_date = date.fromisoformat(date_str)
-
-            # 从原始消息中去掉日期片段，再做金额匹配
-            message_without_date = user_message.replace(date_str, " ")
+            message_without_date = user_message.replace(date_str, "")  # 去掉日期部分，避免干扰金额提取
         except ValueError:
             extracted_date = None
 
+    if extracted_date is None:
+        extracted_date = _extract_relative_date(msg, today)
+
     # ------------------------------------------------------------------
     # 再提取金额
-    # 注意：这里使用“去掉日期后的文本”来做匹配，
-    # 就不会把日期中的年份误当成金额了
+    # 先去掉货币符号，再去掉千位逗号，避免 $64,0000 被截断为 64
+    # 注意：使用”去掉日期后的文本”，避免年份被误识别为金额
     # ------------------------------------------------------------------
     extracted_amount: Optional[float] = None
-    amount_match = _AMOUNT_PATTERN.search(message_without_date)
+    normalized = _CURRENCY_PREFIX.sub("", message_without_date)
+    amount_match = _AMOUNT_PATTERN.search(normalized)
     if amount_match:
         try:
-            extracted_amount = float(amount_match.group(1))
+            extracted_amount = float(amount_match.group(1).replace(",", ""))
         except ValueError:
             extracted_amount = None
 
@@ -266,21 +248,18 @@ def extract_goal_from_message(
         structured_llm = llm.with_structured_output(GoalExtractionResult)
     except Exception as exc:
         logger.warning("Failed to initialise LLM for goal extraction: %s", exc)
-        return _fallback_extract(user_message), False
-
-    llm_messages = [
-        SystemMessage(content=(
-            f"Today's date is {today.isoformat()}. "
-            "When the user mentions a date without a year, always infer the nearest future date relative to today. "
-            "Never resolve an ambiguous date to a date in the past."
-        )),
-        HumanMessage(content=_build_prompt(user_message)),
-    ]
+        return _fallback_extract(user_message, today=today), False
+    
+    # build prompt
+    messages = get_prompt("goal_extractor").format_messages(
+        today=today.isoformat(),
+        user_message=user_message,
+    )
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result: GoalExtractionResult = structured_llm.invoke(llm_messages)
+            result: GoalExtractionResult = structured_llm.invoke(messages)
             return result, True
         except Exception as exc:
             last_exc = exc
@@ -297,4 +276,4 @@ def extract_goal_from_message(
                     MAX_RETRIES, last_exc,
                 )
 
-    return _fallback_extract(user_message), False
+    return _fallback_extract(user_message, today=today), False

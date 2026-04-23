@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from langchain_anthropic import ChatAnthropic
-from app.config import resolve_model_name
+from app.config import resolve_model_name, get_prompt
 from app.state import TransactionCategory
 
 
@@ -60,29 +60,16 @@ def extract_budget_request(state: Dict[str, Any]) -> Dict[str, Any]:
             "needs_clarification": state_income is None,
         }
 
-    prompt = f"""
-You are an information extraction assistant for a personal finance multi-agent system.
-
-Your task is to extract a structured budget-planning request from the user's message.
-
-Return:
-- intent: always "budget_planning"
-- user_message: the original user message
-- monthly_income: extract a numeric monthly income only if explicitly stated in the message; otherwise null
-- categories_requested: extract any spending categories the user specifically mentions wanting to plan. Only choose from: {', '.join(SUPPORTED_CATEGORIES)}. Leave empty list if no specific categories are mentioned.
-- needs_clarification: true if the request lacks enough information for budget planning, especially when monthly income is unknown both in the message and external state
-
-User message:
-{last_message}
-
-Known monthly income from state:
-{state_income}
-"""
+    messages = get_prompt("budget_request_extractor").format_messages(
+        supported_categories=", ".join(SUPPORTED_CATEGORIES),
+        last_message=last_message,
+        state_income=str(state_income) if state_income is not None else "unknown",
+    )
 
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result = structured_llm.invoke(prompt)
+            result = structured_llm.invoke(messages)
             monthly_income = result.monthly_income if result.monthly_income is not None else state_income
             return {
                 "intent": "budget_planning",

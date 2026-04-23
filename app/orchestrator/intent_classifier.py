@@ -18,7 +18,7 @@ from typing import Literal
 
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel
-from app.config import resolve_model_name
+from app.config import resolve_model_name, get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -55,23 +55,8 @@ def _keyword_fallback(message: str) -> str:
     elif any(kw in msg for kw in ["spend", "spending", "expense", "transaction", "categor"]):
         return "expense_analysis"
 
+    #return "expense_analysis"
     return "unknown"
-
-
-def _build_prompt(message: str) -> str:
-    """Build the intent classification prompt."""
-    return (
-        "You are the routing brain of a personal finance AI assistant.\n\n"
-        "Given the user's message, identify which single specialist agent should handle it:\n"
-        '- "expense_analysis": user wants to see spending breakdown, transaction categories, or spending trends\n'
-        '- "budget_planning": user wants to plan, adjust, or review spending limits/budgets\n'
-        '- "goal_planning": user wants to set or track savings goals, deposits, or funds\n'
-        '- "anomaly_detection": user wants to find suspicious, unexpected, or unusual transactions\n'
-        '- "health_assessment": user wants a financial health check, risk score, or overall financial picture\n'
-        '- "unknown": the message is not related to personal finance at all\n\n'
-        "Respond with exactly one agent name and a brief one-sentence reasoning.\n\n"
-        f"User message: {message}"
-    )
 
 
 def classify_intent(message: str) -> str:
@@ -86,8 +71,8 @@ def classify_intent(message: str) -> str:
         llm = ChatAnthropic(model=model_name)
         structured_llm = llm.with_structured_output(_IntentResult)
 
-        prompt = _build_prompt(message)
-        result: _IntentResult = structured_llm.invoke(prompt)
+        messages = get_prompt("intent_classifier").format_messages(message=message)
+        result: _IntentResult = structured_llm.invoke(messages)
 
         logger.debug(
             "[intent_classifier] classified '%s' → %s (reasoning: %s)",

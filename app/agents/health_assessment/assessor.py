@@ -38,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 
-from app.config import resolve_model_name
+from app.config import resolve_model_name, get_prompt
 from app.state import (
     Alert,
     AlertSeverity,
@@ -282,47 +282,6 @@ class _AdvisoryResult(BaseModel):
     )
 
 
-def _build_advisory_prompt(
-    rating: HealthRating,
-    dti: float,
-    reserve_months: float,
-    concentration_risk: bool,
-    overspending: bool,
-    monthly_income: float,
-    spending_trends: list[SpendingTrend],
-) -> str:
-    """Build the prompt sent to Claude for personalised advisory observations."""
-    trend_lines: list[str] = []
-    for t in sorted(spending_trends, key=lambda s: s.current_period_total, reverse=True)[:3]:
-        if t.deviation_pct is not None:
-            sign = "+" if t.deviation_pct >= 0 else ""
-            trend_lines.append(
-                f"  {t.category.value}: £{t.current_period_total:.0f}/month "
-                f"({sign}{t.deviation_pct:.1f}% vs prior period)"
-            )
-        else:
-            trend_lines.append(
-                f"  {t.category.value}: £{t.current_period_total:.0f}/month (no prior period data)"
-            )
-    trends_text = "\n".join(trend_lines) if trend_lines else "  No spending trend data available."
-
-    return (
-        "You are a personal finance advisor reviewing a user's financial health summary.\n\n"
-        f"Overall Rating: {rating.value.upper()}\n"
-        f"Debt-to-Income Ratio: {dti:.0%}  (healthy < 36%, high risk ≥ 50%)\n"
-        f"Liquid Reserve Months: {reserve_months:.1f}  (healthy ≥ 3 months, critical < 1 month)\n"
-        f"Income Concentration Risk: {'Yes — single income source dominates' if concentration_risk else 'No'}\n"
-        f"Sustained Overspending: {'Yes — expenses exceed monthly income' if overspending else 'No'}\n"
-        f"Monthly Income: £{monthly_income:.0f}\n\n"
-        f"Top spending categories this month:\n{trends_text}\n\n"
-        "Write 2–4 plain-English observations for the user. Requirements:\n"
-        "- Prioritise the most impactful issues first.\n"
-        "- For each risk factor present, include one concrete, actionable suggestion.\n"
-        "- Keep a calm, supportive, non-judgmental tone.\n"
-        "- Do not invent metrics or contradict the rating shown above.\n"
-        "- Each observation must be 1–2 sentences.\n"
-        "- Return only the list of observation strings, nothing else."
-    )
 
 
 def _generate_advisory(
@@ -350,15 +309,34 @@ def _generate_advisory(
         logger.warning("Failed to initialise LLM for health advisory: %s", exc)
         return None
 
-    prompt = _build_advisory_prompt(
-        rating, dti, reserve_months, concentration_risk,
-        overspending, monthly_income, spending_trends,
+    trend_lines: list[str] = []
+    for t in sorted(spending_trends, key=lambda s: s.current_period_total, reverse=True)[:3]:
+        if t.deviation_pct is not None:
+            sign = "+" if t.deviation_pct >= 0 else ""
+            trend_lines.append(
+                f"  {t.category.value}: £{t.current_period_total:.0f}/month "
+                f"({sign}{t.deviation_pct:.1f}% vs prior period)"
+            )
+        else:
+            trend_lines.append(
+                f"  {t.category.value}: £{t.current_period_total:.0f}/month (no prior period data)"
+            )
+    trends_text = "\n".join(trend_lines) if trend_lines else "  No spending trend data available."
+
+    messages = get_prompt("health_advisory").format_messages(
+        rating=rating.value.upper(),
+        dti=f"{dti:.0%}",
+        reserve_months=f"{reserve_months:.1f}",
+        concentration_risk="Yes — single income source dominates" if concentration_risk else "No",
+        overspending="Yes — expenses exceed monthly income" if overspending else "No",
+        monthly_income=f"{monthly_income:.0f}",
+        trends_text=trends_text,
     )
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response: _AdvisoryResult = structured_llm.invoke(prompt)
+            response: _AdvisoryResult = structured_llm.invoke(messages)
             return response.observations
         except Exception as exc:
             last_exc = exc

@@ -26,9 +26,9 @@ def _build_ai_message(health_summary) -> str:
         f"• Liquid reserves: {health_summary.liquid_reserve_months:.1f} months",
     ]
     if health_summary.income_concentration_risk:
-        lines.append("• ⚠ Income concentration risk detected")
+        lines.append("• ⚠️ Income concentration risk detected")
     if health_summary.sustained_overspending:
-        lines.append("• ⚠ Sustained overspending detected")
+        lines.append("• ⚠️ Sustained overspending detected")
     if health_summary.observations:
         lines.append("\nAdvisory:")
         for obs in health_summary.observations:

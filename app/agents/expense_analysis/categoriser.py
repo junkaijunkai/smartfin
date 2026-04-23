@@ -21,7 +21,7 @@ import time
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel
 
-from app.config import resolve_model_name
+from app.config import resolve_model_name, get_prompt
 from app.state import Transaction, TransactionCategory
 
 logger = logging.getLogger(__name__)
@@ -113,21 +113,6 @@ def _keyword_fallback(transactions: list[Transaction]) -> list[Transaction]:
 # ---------------------------------------------------------------------------
 
 
-def _build_prompt(chunk: list[Transaction]) -> str:
-    lines = [
-        f"id={t.id} | merchant={t.merchant} | description={t.description} | amount={t.amount:.2f}"
-        for t in chunk
-    ]
-    category_values = ", ".join(c.value for c in TransactionCategory)
-    return (
-        f"You are a financial data analyst. Classify each transaction below into "
-        f"exactly one of these categories: {category_values}.\n\n"
-        "Rules:\n"
-        "- Positive amount = expense, negative amount = income → use 'income'.\n"
-        "- Use 'other' only when no category fits clearly.\n"
-        "- Return a result for EVERY transaction id listed, in any order.\n\n"
-        "Transactions:\n" + "\n".join(lines)
-    )
 
 
 def _categorise_chunk(
@@ -141,12 +126,20 @@ def _categorise_chunk(
         (categorised transactions, llm_succeeded)
         llm_succeeded is False when the keyword fallback was used.
     """
-    prompt = _build_prompt(chunk)
+    category_values = ", ".join(c.value for c in TransactionCategory)
+    lines = [
+        f"id={t.id} | merchant={t.merchant} | description={t.description} | amount={t.amount:.2f}"
+        for t in chunk
+    ]
+    messages = get_prompt("expense_categoriser").format_messages(
+        category_values=category_values,
+        transactions_text="\n".join(lines),
+    )
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response: _CategoryBatch = structured_llm.invoke(prompt)
+            response: _CategoryBatch = structured_llm.invoke(messages)
             category_map = {r.transaction_id: r.category for r in response.results}
             categorised = [
                 t.model_copy(update={"category": category_map.get(t.id, TransactionCategory.OTHER)})

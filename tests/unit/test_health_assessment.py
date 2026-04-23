@@ -17,7 +17,6 @@ from app.agents.health_assessment.assessor import (
     RESERVE_FAIR,
     RESERVE_GOOD,
     _AdvisoryResult,
-    _build_advisory_prompt,
     _compute_dti,
     _compute_reserve_months,
     _generate_advisory,
@@ -601,37 +600,3 @@ class TestGenerateAdvisory:
         summary, _ = assess_health([], monthly_income=3000.0)
         assert len(summary.observations) > 0
 
-    # --- Prompt content ---
-
-    def test_prompt_contains_rating(self):
-        from app.state import SpendingTrend
-        prompt = _build_advisory_prompt(
-            HealthRating.POOR, 0.55, 0.5, True, True, 2800.0, []
-        )
-        assert "POOR" in prompt
-
-    def test_prompt_contains_dti(self):
-        prompt = _build_advisory_prompt(
-            HealthRating.FAIR, 0.42, 1.8, False, False, 3200.0, []
-        )
-        assert "42%" in prompt
-
-    def test_prompt_includes_trend_categories(self):
-        from app.state import SpendingTrend
-        trend = SpendingTrend(
-            category=TransactionCategory.FOOD,
-            current_period_total=500.0,
-            previous_period_total=400.0,
-            deviation_pct=25.0,
-        )
-        prompt = _build_advisory_prompt(
-            HealthRating.FAIR, 0.35, 2.0, False, False, 3000.0, [trend]
-        )
-        assert "food" in prompt.lower()
-        assert "+25.0%" in prompt
-
-    def test_prompt_handles_no_trends(self):
-        prompt = _build_advisory_prompt(
-            HealthRating.GOOD, 0.20, 4.0, False, False, 4000.0, []
-        )
-        assert "No spending trend data available" in prompt

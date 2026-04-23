@@ -21,7 +21,7 @@ from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel
 
 from app.agents.anomaly_detection.detector import detect_anomalies
-from app.config import resolve_model_name
+from app.config import resolve_model_name, get_prompt
 from app.state import AnomalyFlag, Transaction
 
 logger = logging.getLogger(__name__)
@@ -111,12 +111,8 @@ def _generate_explanations(
                 f"Statistical reason: {flag.explanation}\n"
             )
 
-    prompt = (
-        "You are a financial advisor explaining anomalous transactions to a user. "
-        "For each flagged transaction below, provide a brief, natural-language explanation "
-        "of why it was flagged, in a friendly and non-alarming tone.\n\n"
-        "Explain the statistical reason in simple terms. Be concise (1-2 sentences per transaction).\n\n"
-        "Flagged transactions:\n" + "---\n".join(lines)
+    messages = get_prompt("anomaly_explainer").format_messages(
+        flagged_transactions_text="---\n".join(lines)
     )
 
     model_name = resolve_model_name(os.getenv("SMARTFIN_MODEL", "claude-haiku-4-5"))
@@ -131,7 +127,7 @@ def _generate_explanations(
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response: _ExplanationBatch = structured_llm.invoke(prompt)
+            response: _ExplanationBatch = structured_llm.invoke(messages)
             return {r.transaction_id: r.explanation for r in response.results}
         except Exception as exc:
             last_exc = exc

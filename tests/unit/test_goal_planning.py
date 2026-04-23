@@ -89,20 +89,6 @@ def test_calculate_required_monthly_saving_when_goal_already_completed():
 # extractor.py 测试
 # ---------------------------------------------------------------------------
 
-def test_build_prompt_contains_user_message():
-    """
-    测试：prompt 中应包含原始用户消息和关键字段提示。
-    这个测试可以覆盖 _build_prompt 的逻辑。
-    """
-    user_message = "I want to save 8000 by 2027-06-01 for a laptop."
-
-    prompt = extractor_module._build_prompt(user_message)
-
-    assert user_message in prompt
-    assert "is_goal_intent" in prompt
-    assert "target_amount" in prompt
-    assert "target_date" in prompt
-    assert "missing_fields" in prompt
 
 
 def test_fallback_extract_complete_laptop_goal():

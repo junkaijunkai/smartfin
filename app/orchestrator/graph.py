@@ -134,8 +134,6 @@ def supervisor_node(state: AppState, config: RunnableConfig | None = None) -> di
 
     # Use LLM to classify intent; falls back to keyword matching on error
     agent_name = classify_intent(safe_message)
-    # Use LLM to classify intent; falls back to keyword matching on error
-    agent_name = classify_intent(safe_message)
 
     if agent_name == "unknown":
         from langchain_core.messages import AIMessage
