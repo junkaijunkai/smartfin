@@ -60,6 +60,9 @@ include = ["app*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--cov=app --cov-report=term-missing"
+markers = [
+    "eval: deepeval LLM evaluation tests — require live API keys (exclude with -m 'not eval')",
+]
 
 [tool.coverage.run]
 omit = ["tests/*"]
