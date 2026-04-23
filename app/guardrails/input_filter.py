@@ -31,6 +31,7 @@ FINANCE_KEYWORDS = [
     "transaction",
     "transactions",
     "goal",
+    "save",
     "saving",
     "savings",
     "deposit",
@@ -42,6 +43,12 @@ FINANCE_KEYWORDS = [
     "suspicious",
     "finance",
     "finances",
+    "accumulate",
+    "set aside",
+    "put aside",
+    "invest",
+    "investment",
+    "emergency",
 ]
 
 
