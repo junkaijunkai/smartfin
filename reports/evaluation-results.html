@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartFin LLM Evaluation Results</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #f5f7fa; padding: 20px; line-height: 1.6; }
+        .container { max-width: 1400px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+        header { background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%); color: white; padding: 30px; }
+        h1 { font-size: 28px; margin-bottom: 10px; }
+        .subtitle { opacity: 0.9; }
+
+        /* Summary cards */
+        .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; padding: 20px; background: #f8f9fa; }
+        .stat-card { background: white; padding: 20px; border-radius: 6px; border-left: 4px solid #6f42c1; }
+        .stat-card.suites { border-left-color: #17a2b8; }
+        .stat-card.metrics { border-left-color: #fd7e14; }
+        .stat-card.judge { border-left-color: #495057; }
+        .stat-number { font-size: 32px; font-weight: bold; margin-bottom: 5px; color: #6f42c1; }
+        .stat-number.blue { color: #17a2b8; }
+        .stat-number.orange { color: #fd7e14; }
+        .stat-number.dark { color: #495057; }
+        .stat-label { color: #6c757d; font-size: 14px; }
+
+        .content { padding: 20px; }
+        h2 { font-size: 22px; margin: 30px 0 15px; color: #333; border-bottom: 2px solid #6f42c1; padding-bottom: 8px; }
+        h2:first-child { margin-top: 0; }
+        h3 { font-size: 18px; margin: 20px 0 10px; color: #444; }
+
+        /* Eval level legend */
+        .level-legend { display: flex; gap: 20px; margin: 15px 0 25px; flex-wrap: wrap; }
+        .level-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+        .level-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; color: white; }
+        .level-l1 { background: #28a745; }
+        .level-l2 { background: #17a2b8; }
+        .level-l3 { background: #6f42c1; }
+
+        /* Eval suite cards */
+        .eval-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; margin: 20px 0; }
+        .eval-card { background: #f8f9fa; border-radius: 8px; overflow: hidden; border: 1px solid #e0e0e0; }
+        .eval-card-header { padding: 15px 20px; color: white; font-weight: 600; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+        .eval-card-header.intent { background: linear-gradient(135deg, #6f42c1 0%, #764ba2 100%); }
+        .eval-card-header.expense { background: linear-gradient(135deg, #28a745 0%, #20c997 100%); }
+        .eval-card-header.budget { background: linear-gradient(135deg, #17a2b8 0%, #0d6efd 100%); }
+        .eval-card-header.goal { background: linear-gradient(135deg, #fd7e14 0%, #ffc107 100%); }
+        .eval-card-header.anomaly { background: linear-gradient(135deg, #dc3545 0%, #e83e8c 100%); }
+        .eval-card-header.health { background: linear-gradient(135deg, #495057 0%, #6c757d 100%); }
+        .eval-card-header .header-badge { background: rgba(255,255,255,0.3); padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+        .eval-card-body { padding: 15px 20px; }
+        .eval-card-body p { font-size: 13px; color: #4a4a4a; margin-bottom: 8px; }
+        .eval-card-body .tag { display: inline-block; background: #e9ecef; padding: 2px 8px; border-radius: 4px; font-size: 11px; color: #495057; margin: 2px 2px 0 0; font-family: 'Courier New', monospace; }
+
+        /* Test case table within eval card */
+        .eval-cases { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        .eval-cases th { background: #495057; color: white; padding: 8px 10px; text-align: left; font-size: 12px; font-weight: 600; }
+        .eval-cases td { padding: 8px 10px; border-bottom: 1px solid #e9ecef; font-size: 12px; }
+        .eval-cases tr:hover { background: #f0f0f0; }
+        .eval-cases .input-text { max-width: 280px; color: #333; word-break: break-word; }
+        .eval-cases .expected { font-family: 'Courier New', monospace; color: #6f42c1; font-size: 11px; }
+
+        /* Metric info */
+        .metric-info { display: flex; gap: 15px; margin-top: 12px; flex-wrap: wrap; }
+        .metric-chip { display: flex; align-items: center; gap: 6px; background: white; padding: 6px 12px; border-radius: 6px; border: 1px solid #e0e0e0; font-size: 12px; }
+        .metric-chip .metric-name { font-weight: 600; color: #333; }
+        .metric-chip .metric-threshold { color: #6c757d; }
+
+        /* Results overview table */
+        .results-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        .results-table th { background: #495057; color: white; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 13px; }
+        .results-table td { padding: 10px 12px; border-bottom: 1px solid #e9ecef; font-size: 13px; }
+        .results-table tr:hover { background: #f8f9fa; }
+
+        /* Status badges */
+        .status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .status-passed { background: #28a745; color: white; }
+        .status-skipped { background: #6c757d; color: white; }
+
+        /* Architecture info */
+        .arch-box { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 8px; padding: 20px; margin: 15px 0; border-left: 4px solid #6f42c1; }
+        .arch-box h4 { color: #333; margin-bottom: 10px; }
+        .arch-box p { font-size: 13px; color: #4a4a4a; }
+        .arch-flow { display: flex; align-items: center; justify-content: center; gap: 0; margin: 15px 0; flex-wrap: wrap; }
+        .arch-node { background: white; border: 2px solid #6f42c1; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; color: #6f42c1; text-align: center; }
+        .arch-node small { display: block; font-weight: 400; font-size: 11px; color: #6c757d; }
+        .arch-arrow { font-size: 18px; color: #adb5bd; margin: 0 6px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SmartFin LLM Evaluation Results</h1>
+            <div class="subtitle">deepeval-powered LLM Agent Quality Evaluation with Claude Judge</div>
+        </header>
+
+        <!-- Overall Summary -->
+        <div class="summary">
+            <div class="stat-card">
+                <div class="stat-number">19</div>
+                <div class="stat-label">Total Evaluation Cases</div>
+            </div>
+            <div class="stat-card suites">
+                <div class="stat-number blue">6</div>
+                <div class="stat-label">Evaluation Suites</div>
+            </div>
+            <div class="stat-card metrics">
+                <div class="stat-number orange">4</div>
+                <div class="stat-label">Metric Types Used</div>
+            </div>
+            <div class="stat-card judge">
+                <div class="stat-number dark" style="font-size: 22px;">Claude Haiku 4.5</div>
+                <div class="stat-label">Judge Model</div>
+            </div>
+        </div>
+
+        <div class="content">
+
+            <!-- Evaluation Architecture -->
+            <h2>Evaluation Architecture</h2>
+            <div class="arch-box">
+                <h4>How SmartFin Evaluations Work</h4>
+                <p>SmartFin uses <strong>deepeval</strong> with <strong>Claude Haiku 4.5</strong> as the judge model (LLM-as-a-Judge pattern). The target agent under test uses <strong>Claude Sonnet</strong> to generate outputs, and the judge model independently scores those outputs against expected results using configurable metrics.</p>
+
+                <div class="arch-flow" style="margin-top: 15px;">
+                    <div class="arch-node">
+                        Test Input<br>
+                        <small>User message / txns</small>
+                    </div>
+                    <div class="arch-arrow">&rarr;</div>
+                    <div class="arch-node" style="border-color: #28a745; color: #28a745;">
+                        Agent Under Test<br>
+                        <small>Claude Sonnet</small>
+                    </div>
+                    <div class="arch-arrow">&rarr;</div>
+                    <div class="arch-node">
+                        actual_output<br>
+                        <small>Agent response</small>
+                    </div>
+                    <div class="arch-arrow">&rarr;</div>
+                    <div class="arch-node" style="border-color: #e83e8c; color: #e83e8c;">
+                        deepeval Judge<br>
+                        <small>Claude Haiku 4.5</small>
+                    </div>
+                    <div class="arch-arrow">&rarr;</div>
+                    <div class="arch-node" style="border-color: #fd7e14; color: #fd7e14;">
+                        Score<br>
+                        <small>0.0 &ndash; 1.0</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Evaluation Levels -->
+            <h2>Evaluation Levels</h2>
+            <div class="level-legend">
+                <div class="level-item">
+                    <span class="level-badge level-l1">L1</span>
+                    <span><strong>Component Accuracy</strong> &mdash; Exact field-level extraction correctness (GEval)</span>
+                </div>
+                <div class="level-item">
+                    <span class="level-badge level-l2">L2</span>
+                    <span><strong>Output Quality</strong> &mdash; Relevancy &amp; faithfulness of free-text explanations</span>
+                </div>
+                <div class="level-item">
+                    <span class="level-badge level-l3">L3</span>
+                    <span><strong>Routing Accuracy</strong> &mdash; Correct intent classification and agent routing</span>
+                </div>
+            </div>
+
+            <!-- Metrics Used -->
+            <h2>Metrics Used</h2>
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                        <th>Used In</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>GEval</strong></td>
+                        <td>Custom criteria</td>
+                        <td>LLM-judge evaluates actual vs expected output using user-defined criteria string. Supports exact match, semantic match, and structured JSON comparison.</td>
+                        <td>Intent, Expense, Budget, Goal</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AnswerRelevancyMetric</strong></td>
+                        <td>Relevancy</td>
+                        <td>Measures whether the generated text is relevant to the input question / context. Penalises off-topic or hallucinated content.</td>
+                        <td>Anomaly, Health</td>
+                    </tr>
+                    <tr>
+                        <td><strong>FaithfulnessMetric</strong></td>
+                        <td>Faithfulness</td>
+                        <td>Measures whether the generated text is grounded in the provided retrieval context. Penalises claims not supported by source data.</td>
+                        <td>Anomaly, Health</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- Evaluation Suites Detail -->
+            <h2>Evaluation Suites</h2>
+            <div class="eval-grid">
+
+                <!-- Intent Classification Eval -->
+                <div class="eval-card">
+                    <div class="eval-card-header intent">
+                        Intent Classification Eval
+                        <span class="header-badge">L3 Routing</span>
+                    </div>
+                    <div class="eval-card-body">
+                        <p><strong>Purpose:</strong> Verify the LLM-powered intent classifier routes user messages to the correct specialist agent.</p>
+                        <p><strong>Module under test:</strong> <code>app.orchestrator.intent_classifier.classify_intent()</code></p>
+                        <span class="tag">test_intent_eval.py</span>
+                        <span class="tag">5 test cases</span>
+
+                        <div class="metric-info">
+                            <div class="metric-chip">
+                                <span class="metric-name">GEval: IntentRoutingAccuracy</span>
+                                <span class="metric-threshold">threshold &ge; 0.9</span>
+                            </div>
+                        </div>
+
+                        <table class="eval-cases">
+                            <thead>
+                                <tr><th>Input Message</th><th>Expected Agent</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="input-text">Show me a breakdown of my spending last month</td>
+                                    <td class="expected">expense_analysis</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">Set me a monthly budget of &pound;3000, split between food and transport</td>
+                                    <td class="expected">budget_planning</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">I want to save &pound;10,000 for a house deposit by end of 2026</td>
+                                    <td class="expected">goal_planning</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">There's a suspicious &pound;500 charge on my account I don't recognise</td>
+                                    <td class="expected">anomaly_detection</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">What's my overall financial health looking like right now?</td>
+                                    <td class="expected">health_assessment</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Expense Categorisation Eval -->
+                <div class="eval-card">
+                    <div class="eval-card-header expense">
+                        Expense Categorisation Eval
+                        <span class="header-badge">L1 Accuracy</span>
+                    </div>
+                    <div class="eval-card-body">
+                        <p><strong>Purpose:</strong> Verify the LLM categoriser assigns the correct spending category to each transaction.</p>
+                        <p><strong>Module under test:</strong> <code>app.agents.expense_analysis.categoriser.categorise_transactions()</code></p>
+                        <span class="tag">test_expense_eval.py</span>
+                        <span class="tag">5 transactions</span>
+
+                        <div class="metric-info">
+                            <div class="metric-chip">
+                                <span class="metric-name">GEval: CategoryAccuracy</span>
+                                <span class="metric-threshold">threshold &ge; 0.8</span>
+                            </div>
+                        </div>
+
+                        <table class="eval-cases">
+                            <thead>
+                                <tr><th>Transaction</th><th>Expected Category</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="input-text">Landlord &mdash; Monthly rent payment (&pound;1,200)</td>
+                                    <td class="expected">housing</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">Netflix &mdash; Monthly streaming subscription (&pound;15.99)</td>
+                                    <td class="expected">entertainment</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">Tesco &mdash; Weekly grocery shopping (&pound;78.40)</td>
+                                    <td class="expected">food</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">Company Ltd &mdash; Monthly salary (-&pound;3,200)</td>
+                                    <td class="expected">income</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">Uber &mdash; Taxi ride to airport (&pound;32.50)</td>
+                                    <td class="expected">transport</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Budget Extraction Eval -->
+                <div class="eval-card">
+                    <div class="eval-card-header budget">
+                        Budget Extraction Eval
+                        <span class="header-badge">L1 Accuracy</span>
+                    </div>
+                    <div class="eval-card-body">
+                        <p><strong>Purpose:</strong> Verify the LLM extracts budget request fields (income, categories, clarification needed) correctly from user messages and application state.</p>
+                        <p><strong>Module under test:</strong> <code>app.agents.budget_planning.extractor.extract_budget_request()</code></p>
+                        <span class="tag">test_budget_eval.py</span>
+                        <span class="tag">2 test cases</span>
+
+                        <div class="metric-info">
+                            <div class="metric-chip">
+                                <span class="metric-name">GEval: BudgetExtractionAccuracy</span>
+                                <span class="metric-threshold">threshold &ge; 0.8</span>
+                            </div>
+                        </div>
+
+                        <table class="eval-cases">
+                            <thead>
+                                <tr><th>Input Message</th><th>State Income</th><th>Expected Behaviour</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="input-text">Set me a monthly budget of GBP4000, with GBP800 for food and GBP200 for transport</td>
+                                    <td class="expected">null</td>
+                                    <td class="input-text">income=null, categories=[food, transport], needs_clarification=true</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">Create a budget plan for me</td>
+                                    <td class="expected">3500.0</td>
+                                    <td class="input-text">income=3500 (from state), categories=[], needs_clarification=false</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Goal Extraction Eval -->
+                <div class="eval-card">
+                    <div class="eval-card-header goal">
+                        Goal Extraction Eval
+                        <span class="header-badge">L1 Accuracy</span>
+                    </div>
+                    <div class="eval-card-body">
+                        <p><strong>Purpose:</strong> Verify the LLM correctly extracts financial goal fields (intent, name, amount, date, missing fields) from natural language.</p>
+                        <p><strong>Module under test:</strong> <code>app.agents.goal_planning.extractor.extract_goal_from_message()</code></p>
+                        <span class="tag">test_goal_eval.py</span>
+                        <span class="tag">3 test cases</span>
+
+                        <div class="metric-info">
+                            <div class="metric-chip">
+                                <span class="metric-name">GEval: GoalExtractionAccuracy</span>
+                                <span class="metric-threshold">threshold &ge; 0.8</span>
+                            </div>
+                        </div>
+
+                        <table class="eval-cases">
+                            <thead>
+                                <tr><th>Input Message</th><th>Expected Key Fields</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="input-text">I want to save GBP8,000 for a laptop by December 2026</td>
+                                    <td class="input-text">is_goal=true, name=Laptop Fund, amount=8000, date=2026-12-31, missing=[]</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">I'd like to start saving for a house deposit</td>
+                                    <td class="input-text">is_goal=true, amount=null, date=null, missing=[target_amount, target_date]</td>
+                                </tr>
+                                <tr>
+                                    <td class="input-text">What's the weather like today?</td>
+                                    <td class="input-text">is_goal=false, all fields null, missing=[]</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Anomaly Explanation Eval -->
+                <div class="eval-card">
+                    <div class="eval-card-header anomaly">
+                        Anomaly Explanation Eval
+                        <span class="header-badge">L2 Quality</span>
+                    </div>
+                    <div class="eval-card-body">
+                        <p><strong>Purpose:</strong> Verify that LLM-generated anomaly explanations are relevant to flagged transactions and faithfully grounded in statistical detection results.</p>
+                        <p><strong>Module under test:</strong> <code>app.agents.anomaly_detection.extractor.extract_and_detect()</code></p>
+                        <span class="tag">test_anomaly_eval.py</span>
+                        <span class="tag">2 test cases</span>
+
+                        <div class="metric-info">
+                            <div class="metric-chip">
+                                <span class="metric-name">AnswerRelevancyMetric</span>
+                                <span class="metric-threshold">threshold &ge; 0.7</span>
+                            </div>
+                            <div class="metric-chip">
+                                <span class="metric-name">FaithfulnessMetric</span>
+                                <span class="metric-threshold">threshold &ge; 0.7</span>
+                            </div>
+                        </div>
+
+                        <p style="margin-top: 12px;"><strong>Scenario:</strong> Food transactions [&pound;20, &pound;25, &pound;22, &pound;18, <span style="color: #dc3545; font-weight: 600;">&pound;500</span>]. IQR upper fence = &pound;32.50. The &pound;500 "Gourmet Restaurant" charge is flagged as <code>UNUSUAL_AMOUNT</code>.</p>
+
+                        <p><strong>Retrieval Context Provided to Judge:</strong></p>
+                        <ul style="font-size: 12px; margin-left: 20px; color: #6c757d;">
+                            <li>Transaction: Gourmet Restaurant, &pound;500, food category</li>
+                            <li>Statistical reason: Amount exceeds IQR upper fence of ~&pound;32.50</li>
+                            <li>Typical food spending: &pound;18&ndash;&pound;25 per transaction</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Health Advisory Eval -->
+                <div class="eval-card">
+                    <div class="eval-card-header health">
+                        Health Advisory Eval
+                        <span class="header-badge">L2 Quality</span>
+                    </div>
+                    <div class="eval-card-body">
+                        <p><strong>Purpose:</strong> Verify that LLM-generated health observations are relevant and faithfully grounded in computed financial metrics.</p>
+                        <p><strong>Module under test:</strong> <code>app.agents.health_assessment.assessor.assess_health()</code></p>
+                        <span class="tag">test_health_eval.py</span>
+                        <span class="tag">2 test cases</span>
+
+                        <div class="metric-info">
+                            <div class="metric-chip">
+                                <span class="metric-name">AnswerRelevancyMetric</span>
+                                <span class="metric-threshold">threshold &ge; 0.7</span>
+                            </div>
+                            <div class="metric-chip">
+                                <span class="metric-name">FaithfulnessMetric</span>
+                                <span class="metric-threshold">threshold &ge; 0.7</span>
+                            </div>
+                        </div>
+
+                        <p style="margin-top: 12px;"><strong>Scenario:</strong> POOR health rating &mdash; Monthly income &pound;3,000, rent &pound;2,100 (DTI=70%), savings &pound;400 (reserve=0.19 months).</p>
+
+                        <p><strong>Retrieval Context Provided to Judge:</strong></p>
+                        <ul style="font-size: 12px; margin-left: 20px; color: #6c757d;">
+                            <li>Financial health rating: POOR</li>
+                            <li>DTI: 70% (threshold for poor: 50%)</li>
+                            <li>Liquid reserve months: 0.19 (critically low; target: 3 months)</li>
+                            <li>Income concentration risk: No</li>
+                            <li>Sustained overspending: No</li>
+                            <li>Housing trend: &pound;2,100/month (+0.0%)</li>
+                            <li>Food trend: &pound;450/month (+40.6%)</li>
+                        </ul>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Results Summary Table -->
+            <h2>Results Summary</h2>
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>Evaluation Suite</th>
+                        <th>Level</th>
+                        <th>Test Cases</th>
+                        <th>Metric(s)</th>
+                        <th>Threshold</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Intent Classification</strong></td>
+                        <td><span class="level-badge level-l3">L3</span></td>
+                        <td>5</td>
+                        <td>GEval (IntentRoutingAccuracy)</td>
+                        <td>&ge; 0.9</td>
+                        <td><span class="status-badge status-passed">PASS</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Expense Categorisation</strong></td>
+                        <td><span class="level-badge level-l1">L1</span></td>
+                        <td>5</td>
+                        <td>GEval (CategoryAccuracy)</td>
+                        <td>&ge; 0.8</td>
+                        <td><span class="status-badge status-passed">PASS</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Budget Extraction</strong></td>
+                        <td><span class="level-badge level-l1">L1</span></td>
+                        <td>2</td>
+                        <td>GEval (BudgetExtractionAccuracy)</td>
+                        <td>&ge; 0.8</td>
+                        <td><span class="status-badge status-passed">PASS</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Goal Extraction</strong></td>
+                        <td><span class="level-badge level-l1">L1</span></td>
+                        <td>3</td>
+                        <td>GEval (GoalExtractionAccuracy)</td>
+                        <td>&ge; 0.8</td>
+                        <td><span class="status-badge status-passed">PASS</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Anomaly Explanation</strong></td>
+                        <td><span class="level-badge level-l2">L2</span></td>
+                        <td>2</td>
+                        <td>AnswerRelevancy + Faithfulness</td>
+                        <td>&ge; 0.7</td>
+                        <td><span class="status-badge status-passed">PASS</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Health Advisory</strong></td>
+                        <td><span class="level-badge level-l2">L2</span></td>
+                        <td>2</td>
+                        <td>AnswerRelevancy + Faithfulness</td>
+                        <td>&ge; 0.7</td>
+                        <td><span class="status-badge status-passed">PASS</span></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="arch-box" style="margin-top: 25px; border-left-color: #17a2b8;">
+                <h4>CI Integration Note</h4>
+                <p>These evaluations run in the <code>llm-evaluations</code> job of the CI pipeline, after all quality &amp; security checks pass. They require the <code>ANTHROPIC_API_KEY</code> secret to be configured. If the key is not set, evaluations are gracefully skipped without failing the pipeline.</p>
+                <p style="margin-top: 8px;">Command: <code>python -m pytest tests/evals -v -m eval</code></p>
+            </div>
+
+        </div>
+    </div>
+</body>
+</html>

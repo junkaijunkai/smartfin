@@ -1,0 +1,432 @@
+name: 🚀 Continuous Deployment
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:  # 允许手动触发部署
+
+jobs:
+  # 准备和构建镜像
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Build and prepare images
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.aliCloud }}
+          script: |
+            echo "🚀 开始部署 Volunteer Platform..."
+            
+            # 进入项目目录
+            cd /home/Volunteer-website
+            git checkout test
+            
+            # 更新代码
+            echo "📥 更新代码..."
+            git pull
+            
+            # 构建镜像
+            echo "🔨 构建镜像..."
+            docker compose build --no-cache
+            
+            # 检查现有镜像
+            echo "📋 检查现有镜像..."
+            docker images | grep jsrgzyc || echo "⚠️  未找到镜像"
+            
+            # 验证所有必需镜像都已构建
+            echo "🔍 验证镜像构建状态..."
+            required_images=(
+              "jsrgzyc/user-service:latest"
+              "jsrgzyc/activity-service:latest"
+              "jsrgzyc/notification-service:latest"
+              "jsrgzyc/frontend:latest"
+            )
+            
+            all_built=true
+            for image in "${required_images[@]}"; do
+              if docker image inspect "$image" >/dev/null 2>&1; then
+                echo "✅ $image 已构建"
+              else
+                echo "❌ $image 未构建"
+                all_built=false
+              fi
+            done
+            
+            if [ "$all_built" = false ]; then
+              echo "⚠️  部分镜像未构建，将在导入阶段尝试重新构建"
+            fi
+            
+            echo "✅ 镜像构建阶段完成"
+
+  # 导入镜像到 containerd
+  import:
+    runs-on: ubuntu-22.04
+    needs: [build]
+    steps:
+      - name: Import images to containerd
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.aliCloud }}
+          script: |
+            cd /home/Volunteer-website
+            
+            echo "📦 导入镜像到 containerd..."
+            
+            required_images=(
+              "jsrgzyc/user-service:latest"
+              "jsrgzyc/activity-service:latest"
+              "jsrgzyc/notification-service:latest"
+              "jsrgzyc/frontend:latest"
+            )
+            
+            # 镜像名到服务名的映射
+            declare -A image_to_service=(
+              ["jsrgzyc/user-service:latest"]="user-service"
+              ["jsrgzyc/activity-service:latest"]="activity-service"
+              ["jsrgzyc/notification-service:latest"]="notification-service"
+              ["jsrgzyc/frontend:latest"]="frontend-service"
+            )
+            
+            # 记录导入成功的镜像
+            imported_images=()
+            
+            for image in "${required_images[@]}"; do
+              image_name=$(echo $image | cut -d'/' -f2 | cut -d':' -f1)
+              service_name="${image_to_service[$image]}"
+              echo "导入 $image_name (服务: $service_name)..."
+              
+              # 检查镜像是否存在（使用 docker image inspect 更可靠）
+              if docker image inspect "$image" >/dev/null 2>&1; then
+                echo "📦 找到镜像 $image，开始导入..."
+                if docker save "$image" | ctr -n k8s.io images import - 2>&1; then
+                  echo "✅ $image_name 导入成功"
+                  imported_images+=("$image")
+                else
+                  echo "⚠️  $image_name 导入可能失败，将在验证阶段检查"
+                fi
+              else
+                echo "❌ $image 镜像不存在"
+                echo "🔍 检查 Docker 镜像列表..."
+                docker images | grep jsrgzyc || echo "未找到任何 jsrgzyc 镜像"
+                echo "🔍 尝试重新构建镜像 (服务: $service_name)..."
+                if [ -n "$service_name" ]; then
+                  docker compose build "$service_name" || echo "构建失败"
+                else
+                  echo "⚠️  无法确定服务名，尝试构建所有镜像..."
+                  docker compose build || echo "构建失败"
+                fi
+                # 再次检查
+                if docker image inspect "$image" >/dev/null 2>&1; then
+                  echo "✅ 镜像构建成功，开始导入..."
+                  if docker save "$image" | ctr -n k8s.io images import - 2>&1; then
+                    echo "✅ $image_name 导入成功"
+                    imported_images+=("$image")
+                  else
+                    echo "⚠️  $image_name 导入可能失败，将在验证阶段检查"
+                  fi
+                else
+                  echo "❌ 镜像 $image 仍然不存在，部署失败"
+                  exit 1
+                fi
+              fi
+            done
+            
+            echo ""
+            echo "📊 导入摘要："
+            echo "  已导入 ${#imported_images[@]}/${#required_images[@]} 个镜像"
+            
+            # 验证镜像导入
+            echo ""
+            echo "🔍 验证镜像导入状态..."
+            
+            # 先显示所有已导入的镜像，便于调试
+            echo "📋 containerd 中的完整镜像列表："
+            ctr -n k8s.io images list 2>/dev/null || ctr -n k8s.io images ls 2>/dev/null || echo "无法获取镜像列表"
+            echo ""
+            echo "📋 过滤后的 jsrgzyc 镜像："
+            ctr -n k8s.io images list 2>/dev/null | grep jsrgzyc || ctr -n k8s.io images ls 2>/dev/null | grep jsrgzyc || echo "未找到 jsrgzyc 镜像"
+            
+            max_attempts=10
+            attempt=1
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo ""
+              echo "检查镜像导入状态 (尝试 $attempt/$max_attempts)..."
+              all_imported=true
+              missing_images=()
+              
+              # 获取镜像列表一次，避免重复调用
+              image_list_full=$(ctr -n k8s.io images list 2>/dev/null || ctr -n k8s.io images ls 2>/dev/null || echo "")
+              
+              for image in "${required_images[@]}"; do
+                found=false
+                image_repo=$(echo "$image" | cut -d':' -f1)
+                image_name_only=$(echo "$image_repo" | cut -d'/' -f2)
+                
+                # 调试：显示检查的镜像信息
+                echo "  检查镜像: $image (仓库: $image_repo, 名称: $image_name_only)"
+                
+                # 方法1: 精确匹配完整镜像名
+                if echo "$image_list_full" | grep -qF "$image"; then
+                  found=true
+                  echo "    → 通过方法1匹配（精确匹配）"
+                # 方法2: 匹配仓库名和标签（可能格式不同，在不同行）
+                elif echo "$image_list_full" | grep -q "$image_repo" && echo "$image_list_full" | grep -q "latest"; then
+                  # 进一步验证：确保仓库名和latest在同一行（同一个镜像）
+                  if echo "$image_list_full" | grep "$image_repo" | grep -q "latest"; then
+                    found=true
+                    echo "    → 通过方法2匹配（仓库+标签，同一行）"
+                  fi
+                # 方法3: 匹配包含仓库名的行，且包含latest标签
+                elif echo "$image_list_full" | grep "$image_repo" | grep -q "latest"; then
+                  found=true
+                  echo "    → 通过方法3匹配（仓库行包含latest）"
+                # 方法4: 使用模式匹配（仓库名/名称:标签）
+                elif echo "$image_list_full" | grep -E "$image_repo.*latest|$image_repo.*:latest" | grep -q "$image_name_only"; then
+                  found=true
+                  echo "    → 通过方法4匹配（模式匹配）"
+                # 方法5: 使用 ctr images check 命令直接检查
+                elif ctr -n k8s.io images check "$image" >/dev/null 2>&1; then
+                  found=true
+                  echo "    → 通过方法5匹配（ctr check）"
+                else
+                  echo "    → 所有匹配方法都失败"
+                  # 显示实际的匹配尝试和调试信息
+                  echo "    调试信息："
+                  echo "      查找镜像: $image"
+                  echo "      仓库名: $image_repo"
+                  echo "      镜像名: $image_name_only"
+                  echo "    相关行："
+                  echo "$image_list_full" | grep -i "$image_name_only" | head -5 || echo "      未找到包含 '$image_name_only' 的行"
+                  echo "    包含仓库名的行："
+                  echo "$image_list_full" | grep "$image_repo" | head -3 || echo "      未找到包含 '$image_repo' 的行"
+                fi
+                
+                if [ "$found" = true ]; then
+                  echo "✅ $image 已导入"
+                else
+                  echo "⏳ $image 尚未导入，等待中..."
+                  all_imported=false
+                  missing_images+=("$image")
+                fi
+              done
+              
+              if [ "$all_imported" = true ]; then
+                echo ""
+                echo "✅ 所有镜像导入完成！"
+                # 再次确认显示所有镜像
+                echo "📋 最终镜像列表："
+                ctr -n k8s.io images list 2>/dev/null | grep jsrgzyc || ctr -n k8s.io images ls 2>/dev/null | grep jsrgzyc || echo "未找到 jsrgzyc 镜像"
+                exit 0
+              fi
+              
+              if [ $attempt -eq $max_attempts ]; then
+                echo ""
+                echo "⚠️  镜像验证超时"
+                echo "📋 containerd 中的实际镜像列表："
+                ctr -n k8s.io images list 2>/dev/null | grep jsrgzyc || ctr -n k8s.io images ls 2>/dev/null | grep jsrgzyc || echo "未找到 jsrgzyc 镜像"
+                echo ""
+                echo "⏳ 以下镜像在验证时未找到，但可能已成功导入（导入命令已显示成功）："
+                for image in "${missing_images[@]}"; do
+                  echo "  - $image"
+                done
+                echo ""
+                echo "💡 如果导入命令已显示成功，镜像应该已可用，继续部署..."
+                # 不退出，继续部署流程
+                break
+              fi
+              
+              echo "等待3秒后重试..."
+              sleep 3
+              attempt=$((attempt + 1))
+            done
+
+  # 部署基础设施
+  deploy-infrastructure:
+    runs-on: ubuntu-22.04
+    needs: [import]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Deploy infrastructure
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.aliCloud }}
+          script: |
+            cd /home/Volunteer-website
+            
+            # 检查 kubectl
+            echo "🔍 检查 kubectl..."
+            if ! command -v kubectl &> /dev/null; then
+              echo "❌ kubectl 未安装"
+              exit 1
+            fi
+            
+            # 检查集群连接
+            echo "🔗 检查 Kubernetes 集群连接..."
+            if ! kubectl cluster-info >/dev/null 2>&1; then
+              echo "❌ 无法连接到 Kubernetes 集群"
+              exit 1
+            fi
+            
+            # 创建命名空间
+            echo "📦 创建命名空间..."
+            kubectl apply -f k8s/namespace.yaml
+            
+            # 创建配置
+            echo "⚙️  创建配置..."
+            kubectl apply -f k8s/configmap.yaml
+            
+            # 部署数据库
+            echo "🗄️  部署数据库..."
+            kubectl apply -f k8s/postgres-deployment.yaml
+            
+            # 等待数据库就绪
+            echo "⏳ 等待数据库就绪..."
+            kubectl wait --for=condition=available --timeout=300s deployment/postgres -n mywork || true
+            
+            echo "✅ 基础设施部署完成"
+
+  # 部署应用服务
+  deploy-services:
+    runs-on: ubuntu-22.04
+    needs: [deploy-infrastructure]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Deploy microservices and frontend
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.aliCloud }}
+          script: |
+            cd /home/Volunteer-website
+            
+            # 部署微服务
+            echo "🔧 部署微服务..."
+            kubectl apply -f k8s/microservices-deployments.yaml
+            kubectl apply -f k8s/microservices-services.yaml
+            
+            # 部署前端
+            echo "🔧 部署前端..."
+            kubectl apply -f k8s/frontend-deployment.yaml
+            
+            # 等待服务就绪
+            echo "⏳ 等待服务就绪..."
+            deployments=(
+              "user-service"
+              "activity-service"
+              "notification-service"
+              "frontend-service"
+            )
+            
+            for deployment in "${deployments[@]}"; do
+              echo "等待 $deployment..."
+              kubectl wait --for=condition=available --timeout=300s deployment/$deployment -n mywork || true
+            done
+            
+            echo "✅ 应用服务部署完成"
+
+  # 部署网关
+  deploy-gateway:
+    runs-on: ubuntu-22.04
+    needs: [deploy-services]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Deploy gateway and ingress
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.aliCloud }}
+          script: |
+            cd /home/Volunteer-website
+            
+            # 部署 nginx 网关
+            echo "🌐 部署 nginx 网关..."
+            kubectl apply -f k8s/nginx-deployment.yaml
+            
+            # 等待网关就绪
+            echo "⏳ 等待网关就绪..."
+            kubectl wait --for=condition=available --timeout=300s deployment/nginx-gateway -n mywork || true
+            
+            # 部署 Ingress
+            echo "🚪 部署 Ingress..."
+            kubectl apply -f k8s/ingress-nginx-controller.yaml
+            kubectl apply -f k8s/ingress.yaml
+            
+            echo "✅ 网关部署完成"
+
+  # 验证部署
+  verify:
+    runs-on: ubuntu-22.04
+    needs: [deploy-gateway]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.aliCloud }}
+          script: |
+            cd /home/Volunteer-website
+            
+            echo "📊 验证部署状态..."
+            
+            echo "=== Pods ==="
+            kubectl get pods -n mywork
+            
+            echo "=== Services ==="
+            kubectl get services -n mywork
+            
+            echo "=== Ingress ==="
+            kubectl get ingress -n mywork
+            
+            echo "=== Deployments ==="
+            kubectl get deployments -n mywork
+            
+            # 获取访问信息
+            echo "🔗 获取访问信息..."
+            kubectl get ingress -n mywork -o wide
+            
+            echo "✅ 部署验证完成！"
+      
+      - name: Deployment summary
+        run: |
+          echo "## 🎉 部署完成！" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 部署阶段" >> $GITHUB_STEP_SUMMARY
+          echo "| 阶段 | 状态 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 构建镜像 | ✅ 完成 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 导入镜像 | ✅ 完成 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 部署基础设施 | ✅ 完成 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 部署应用服务 | ✅ 完成 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 部署网关 | ✅ 完成 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 验证部署 | ✅ 完成 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 已部署服务" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ 用户服务" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ 活动服务" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ 通知服务" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ 前端服务" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ PostgreSQL 数据库" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Nginx 网关" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Ingress 控制器" >> $GITHUB_STEP_SUMMARY

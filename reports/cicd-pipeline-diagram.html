@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartFin CI/CD Pipeline Diagram</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #f5f7fa; padding: 20px; line-height: 1.6; }
+        .container { max-width: 1400px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+        header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; }
+        h1 { font-size: 28px; margin-bottom: 10px; }
+        .subtitle { opacity: 0.9; }
+        .content { padding: 30px; }
+        h2 { font-size: 22px; margin: 30px 0 15px; color: #333; border-bottom: 2px solid #667eea; padding-bottom: 8px; }
+        h2:first-child { margin-top: 0; }
+
+        /* Pipeline Diagram */
+        .pipeline { display: flex; flex-direction: column; gap: 0; margin: 20px 0; }
+        .pipeline-section { position: relative; }
+        .pipeline-section-header { background: #495057; color: white; padding: 12px 20px; font-weight: 600; font-size: 16px; border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 10px; }
+        .pipeline-section-header .badge { background: rgba(255,255,255,0.2); padding: 2px 10px; border-radius: 10px; font-size: 12px; }
+        .pipeline-section-body { border: 2px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 20px; margin-bottom: 20px; }
+        .pipeline-steps { display: flex; flex-wrap: wrap; gap: 15px; align-items: stretch; }
+        .pipeline-step { background: #f8f9fa; border-radius: 8px; padding: 15px; border-left: 4px solid #667eea; flex: 1; min-width: 200px; max-width: 350px; }
+        .pipeline-step.security { border-left-color: #dc3545; }
+        .pipeline-step.test { border-left-color: #28a745; }
+        .pipeline-step.build { border-left-color: #fd7e14; }
+        .pipeline-step.deploy { border-left-color: #17a2b8; }
+        .pipeline-step.eval { border-left-color: #6f42c1; }
+        .pipeline-step h4 { font-size: 14px; color: #333; margin-bottom: 8px; }
+        .pipeline-step p { font-size: 12px; color: #6c757d; }
+        .pipeline-step .tool { display: inline-block; background: #e9ecef; padding: 2px 8px; border-radius: 4px; font-size: 11px; color: #495057; margin: 2px 2px 0 0; font-family: 'Courier New', monospace; }
+
+        /* Arrow between sections */
+        .arrow-down { text-align: center; font-size: 24px; color: #667eea; margin: -10px 0; position: relative; z-index: 1; }
+
+        /* Trigger info */
+        .trigger-box { background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; border-left: 4px solid #28a745; }
+        .trigger-box h3 { font-size: 16px; color: #2e7d32; margin-bottom: 8px; }
+        .trigger-box p { font-size: 13px; color: #4a4a4a; }
+        .trigger-box .branch-badge { display: inline-block; background: #28a745; color: white; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; margin: 2px 4px 2px 0; }
+
+        /* Secrets table */
+        .secrets-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .secrets-table th { background: #495057; color: white; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 13px; }
+        .secrets-table td { padding: 10px 12px; border-bottom: 1px solid #e9ecef; font-size: 13px; }
+        .secrets-table tr:hover { background: #f8f9fa; }
+        .secrets-table .secret-name { font-family: 'Courier New', monospace; color: #667eea; font-weight: 600; }
+
+        /* Flow diagram - horizontal */
+        .flow-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0; margin: 25px 0; }
+        .flow-node { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; min-width: 160px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+        .flow-node.ci { background: linear-gradient(135deg, #28a745 0%, #20c997 100%); }
+        .flow-node.cd { background: linear-gradient(135deg, #17a2b8 0%, #0d6efd 100%); }
+        .flow-node.eval { background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%); }
+        .flow-node small { display: block; font-weight: 400; font-size: 11px; opacity: 0.85; margin-top: 4px; }
+        .flow-arrow { font-size: 20px; color: #adb5bd; margin: 0 8px; }
+
+        /* Summary cards */
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }
+        .summary-card { background: #f8f9fa; border-radius: 8px; padding: 20px; border-left: 4px solid #667eea; }
+        .summary-card h3 { font-size: 16px; color: #333; margin-bottom: 10px; }
+        .summary-card .stat-number { font-size: 36px; font-weight: bold; color: #667eea; }
+        .summary-card .stat-label { color: #6c757d; font-size: 13px; margin-top: 5px; }
+        .summary-card.ci-card { border-left-color: #28a745; }
+        .summary-card.ci-card .stat-number { color: #28a745; }
+        .summary-card.cd-card { border-left-color: #17a2b8; }
+        .summary-card.cd-card .stat-number { color: #17a2b8; }
+        .summary-card.eval-card { border-left-color: #6f42c1; }
+        .summary-card.eval-card .stat-number { color: #6f42c1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SmartFin CI/CD Pipeline Diagram</h1>
+            <div class="subtitle">Continuous Integration, LLM Evaluation &amp; Continuous Deployment</div>
+        </header>
+
+        <div class="content">
+
+            <!-- High-level flow -->
+            <h2>High-Level Pipeline Flow</h2>
+            <div class="flow-row">
+                <div class="flow-node ci">
+                    Quality &amp; Security<br>
+                    <small>quality-security job</small>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-node eval">
+                    LLM Evaluations<br>
+                    <small>llm-evaluations job</small>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-node cd">
+                    Deploy<br>
+                    <small>deploy job (push only)</small>
+                </div>
+            </div>
+
+            <!-- Summary cards -->
+            <div class="summary-cards">
+                <div class="summary-card ci-card">
+                    <h3>CI - Quality &amp; Security</h3>
+                    <div class="stat-number">8</div>
+                    <div class="stat-label">Pipeline Steps</div>
+                </div>
+                <div class="summary-card eval-card">
+                    <h3>LLM Evaluations</h3>
+                    <div class="stat-number">6</div>
+                    <div class="stat-label">Evaluation Suites</div>
+                </div>
+                <div class="summary-card cd-card">
+                    <h3>CD - Deploy</h3>
+                    <div class="stat-number">3</div>
+                    <div class="stat-label">Deployment Steps</div>
+                </div>
+            </div>
+
+            <!-- Triggers -->
+            <h2>Trigger Configuration</h2>
+            <div class="trigger-box">
+                <h3>CI Triggers (quality-security + llm-evaluations)</h3>
+                <p>
+                    <strong>Push:</strong>
+                    <span class="branch-badge">main</span>
+                    <span class="branch-badge">master</span>
+                    <span class="branch-badge">dev</span>
+                </p>
+                <p style="margin-top: 6px;"><strong>Pull Request:</strong> All branches</p>
+            </div>
+            <div class="trigger-box" style="border-left-color: #17a2b8;">
+                <h3 style="color: #0277bd;">CD Trigger (deploy)</h3>
+                <p>Runs automatically after both <code>quality-security</code> and <code>llm-evaluations</code> succeed, <strong>only on push events</strong> (not pull requests).</p>
+                <p style="margin-top: 6px;">
+                    <strong>Branches:</strong>
+                    <span class="branch-badge" style="background: #17a2b8;">main</span>
+                    <span class="branch-badge" style="background: #17a2b8;">master</span>
+                    <span class="branch-badge" style="background: #17a2b8;">dev</span>
+                </p>
+            </div>
+
+            <!-- CI Job Details -->
+            <h2>Job 1: quality-security</h2>
+            <div class="pipeline">
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        Stage 1: Setup &amp; Install
+                        <span class="badge">ubuntu-latest / Python 3.11</span>
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step">
+                                <h4>Checkout</h4>
+                                <p>Clone repository source code</p>
+                                <span class="tool">actions/checkout@v4</span>
+                            </div>
+                            <div class="pipeline-step">
+                                <h4>Setup Python</h4>
+                                <p>Install Python 3.11 with pip cache</p>
+                                <span class="tool">actions/setup-python@v5</span>
+                            </div>
+                            <div class="pipeline-step">
+                                <h4>Install Dependencies</h4>
+                                <p>Install project + CI tool dependencies</p>
+                                <span class="tool">requirements.txt</span>
+                                <span class="tool">ruff</span>
+                                <span class="tool">bandit</span>
+                                <span class="tool">pip-audit</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arrow-down">&darr;</div>
+
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        Stage 2: Code Quality &amp; Linting
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step">
+                                <h4>Ruff Linting</h4>
+                                <p>Static code analysis on app/, ui/, tests/, scripts/</p>
+                                <span class="tool">ruff check</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arrow-down">&darr;</div>
+
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        Stage 3: Testing
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step test">
+                                <h4>Unit Tests</h4>
+                                <p>Test individual components: intent classifier, expense analysis, budget planning, anomaly detection, health assessment, goal planning, config</p>
+                                <span class="tool">pytest tests/unit -v</span>
+                            </div>
+                            <div class="pipeline-step test">
+                                <h4>Integration Tests</h4>
+                                <p>Test full agent pipeline end-to-end with mocked LLMs</p>
+                                <span class="tool">pytest tests/integration -v</span>
+                            </div>
+                            <div class="pipeline-step security">
+                                <h4>Security Tests</h4>
+                                <p>Test guardrails: input filtering &amp; output validation against prompt injection, data leakage</p>
+                                <span class="tool">pytest tests/security -v</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arrow-down">&darr;</div>
+
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        Stage 4: Security Scanning
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step security">
+                                <h4>LLMSecOps Policy Checks</h4>
+                                <p>Verify model registry, input guardrails, output validators against policy test cases</p>
+                                <span class="tool">llmsecops_ci.py</span>
+                            </div>
+                            <div class="pipeline-step security">
+                                <h4>Static Security Scan</h4>
+                                <p>Scan Python code for common vulnerabilities (SQL injection, hardcoded secrets, etc.)</p>
+                                <span class="tool">bandit -r app scripts</span>
+                            </div>
+                            <div class="pipeline-step security">
+                                <h4>Dependency Vulnerability Scan</h4>
+                                <p>Audit Python packages for known CVEs</p>
+                                <span class="tool">pip-audit</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arrow-down">&darr;</div>
+
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        Stage 5: Container Build
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step build">
+                                <h4>Build Backend Image</h4>
+                                <p>Build Docker image for FastAPI backend service</p>
+                                <span class="tool">Dockerfile.backend</span>
+                                <span class="tool">smartfin-backend:ci</span>
+                            </div>
+                            <div class="pipeline-step build">
+                                <h4>Build Frontend Image</h4>
+                                <p>Build Docker image for Streamlit frontend</p>
+                                <span class="tool">Dockerfile.frontend</span>
+                                <span class="tool">smartfin-frontend:ci</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- LLM Evaluations Job -->
+            <h2>Job 2: llm-evaluations <span style="font-size: 14px; color: #6c757d; font-weight: normal;">(needs: quality-security)</span></h2>
+            <div class="pipeline">
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        LLM Agent Evaluation Suites
+                        <span class="badge">Requires ANTHROPIC_API_KEY</span>
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step eval">
+                                <h4>Intent Classification Eval</h4>
+                                <p>Evaluate LLM intent routing accuracy</p>
+                                <span class="tool">test_intent_eval.py</span>
+                            </div>
+                            <div class="pipeline-step eval">
+                                <h4>Expense Analysis Eval</h4>
+                                <p>Evaluate expense analysis agent output quality</p>
+                                <span class="tool">test_expense_eval.py</span>
+                            </div>
+                            <div class="pipeline-step eval">
+                                <h4>Budget Planning Eval</h4>
+                                <p>Evaluate budget planning agent quality</p>
+                                <span class="tool">test_budget_eval.py</span>
+                            </div>
+                            <div class="pipeline-step eval">
+                                <h4>Goal Planning Eval</h4>
+                                <p>Evaluate goal extraction &amp; planning quality</p>
+                                <span class="tool">test_goal_eval.py</span>
+                            </div>
+                            <div class="pipeline-step eval">
+                                <h4>Anomaly Detection Eval</h4>
+                                <p>Evaluate anomaly detection agent accuracy</p>
+                                <span class="tool">test_anomaly_eval.py</span>
+                            </div>
+                            <div class="pipeline-step eval">
+                                <h4>Health Assessment Eval</h4>
+                                <p>Evaluate financial health scoring quality</p>
+                                <span class="tool">test_health_eval.py</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CD Job Details -->
+            <h2>Job 3: deploy <span style="font-size: 14px; color: #6c757d; font-weight: normal;">(needs: quality-security + llm-evaluations, push only)</span></h2>
+            <div class="pipeline">
+                <div class="pipeline-section">
+                    <div class="pipeline-section-header">
+                        Deployment to Production Server
+                        <span class="badge">SSH + SCP + Docker Compose</span>
+                    </div>
+                    <div class="pipeline-section-body">
+                        <div class="pipeline-steps">
+                            <div class="pipeline-step deploy">
+                                <h4>Step 1: Prepare Remote Directory</h4>
+                                <p>SSH into server, create deployment directory at <code>/opt/smartfin</code>, clean old files</p>
+                                <span class="tool">appleboy/ssh-action@v1.2.0</span>
+                            </div>
+                            <div class="pipeline-step deploy">
+                                <h4>Step 2: Upload Source Code</h4>
+                                <p>SCP application source: app, ui, config, scripts, fixtures, requirements, docker files</p>
+                                <span class="tool">appleboy/scp-action@v1</span>
+                            </div>
+                            <div class="pipeline-step deploy">
+                                <h4>Step 3: Render .env &amp; Restart</h4>
+                                <p>Write runtime environment variables, run <code>docker compose up -d --build --remove-orphans</code></p>
+                                <span class="tool">appleboy/ssh-action@v1.2.0</span>
+                                <span class="tool">docker compose</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
