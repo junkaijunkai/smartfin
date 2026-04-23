@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from langchain_core.prompts import ChatPromptTemplate
+
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +27,100 @@ LANGSMITH_PROMPTS: dict[str, str] = {
 
 
 @lru_cache(maxsize=None)
+def _get_local_prompt(name: str) -> ChatPromptTemplate:
+    templates: dict[str, ChatPromptTemplate] = {
+        "intent_classifier": ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are the routing brain of a personal finance AI assistant. "
+                    "Choose exactly one agent from: expense_analysis, budget_planning, goal_planning, anomaly_detection, health_assessment, unknown.",
+                ),
+                (
+                    "human",
+                    "User message: {message}",
+                ),
+            ]
+        ),
+        "expense_categoriser": ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Categorise each transaction into exactly one allowed category. Allowed categories: {category_values}. "
+                    "Return structured results keyed by transaction_id.",
+                ),
+                (
+                    "human",
+                    "Transactions:\n{transactions_text}",
+                ),
+            ]
+        ),
+        "anomaly_explainer": ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Explain flagged financial transactions in plain English using only the supplied statistical reasons.",
+                ),
+                (
+                    "human",
+                    "Flagged transactions:\n{flagged_transactions_text}",
+                ),
+            ]
+        ),
+        "budget_request_extractor": ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Extract a structured budget planning request. Supported categories: {supported_categories}. "
+                    "Use the provided state income only when the user did not mention income.",
+                ),
+                (
+                    "human",
+                    "Latest user message: {last_message}\nState monthly income: {state_income}",
+                ),
+            ]
+        ),
+        "goal_extractor": ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Today's date is {today}. Determine whether the user is expressing a financial savings goal. "
+                    "Extract is_goal_intent, name, target_amount, target_date, current_amount, and missing_fields. "
+                    "Resolve relative dates to concrete future dates when possible.",
+                ),
+                (
+                    "human",
+                    "User message: {user_message}",
+                ),
+            ]
+        ),
+        "health_advisory": ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Generate 2-4 plain-English financial health observations grounded only in the provided metrics and trends.",
+                ),
+                (
+                    "human",
+                    "Rating: {rating}\nDTI: {dti}\nReserve months: {reserve_months}\n"
+                    "Income concentration risk: {concentration_risk}\nOverspending: {overspending}\n"
+                    "Monthly income: {monthly_income}\nSpending trends:\n{trends_text}",
+                ),
+            ]
+        ),
+    }
+    return templates[name]
+
+
+@lru_cache(maxsize=None)
 def get_prompt(name: str):
-    from langsmith import Client
-    return Client().pull_prompt(LANGSMITH_PROMPTS[name])
+    try:
+        from langsmith import Client
+
+        return Client().pull_prompt(LANGSMITH_PROMPTS[name])
+    except Exception as exc:
+        logger.warning("Falling back to local prompt '%s': %s", name, exc)
+        return _get_local_prompt(name)
 
 
 def _is_truthy(value: str | None) -> bool:

@@ -2,17 +2,50 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 
-from deepeval.models.base_model import DeepEvalBaseLLM
+try:
+    from deepeval.models.base_model import DeepEvalBaseLLM
+except ModuleNotFoundError:
+    class DeepEvalBaseLLM:  # type: ignore[no-redef]
+        pass
 
 from app.state import Transaction, TransactionCategory
 
 load_dotenv()
+
+
+def _eval_dependencies_available() -> tuple[bool, str]:
+    if importlib.util.find_spec("deepeval") is None:
+        return False, "deepeval is not installed"
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return False, "ANTHROPIC_API_KEY is not set"
+
+    return True, ""
+
+
+def pytest_ignore_collect(collection_path, config: pytest.Config) -> bool:
+    normalized_path = str(collection_path).replace("\\", "/")
+    if "/tests/evals/" not in normalized_path:
+        return False
+
+    available, _ = _eval_dependencies_available()
+    return not available
+
+
+def pytest_report_header(config: pytest.Config) -> str | None:
+    available, reason = _eval_dependencies_available()
+    if available:
+        return None
+
+    return f"eval tests not collected: {reason}"
 
 
 def pytest_configure(config: pytest.Config) -> None:
